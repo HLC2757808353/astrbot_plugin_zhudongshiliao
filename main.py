@@ -168,18 +168,6 @@ class MyPlugin(Star):
         event.stop_event()
         return event.plain_result("")
     
-    @filter.llm_tool(name="get_admin_info")
-    async def get_admin_info(self, event: AstrMessageEvent) -> MessageEventResult:
-        """
-        获取管理员信息工具
-        """
-        # 获取最新配置
-        config = self._get_config()
-        admin_id = config.get("admin_id", "2757808353")
-        enable_sue = config.get("enable_sue", True)
-        custom_error_message = config.get("custom_error_message", "默认错误消息")
-        enable_custom_error = config.get("enable_custom_error", True)
-        return event.plain_result(f"管理员ID: {admin_id}\n告状功能: {'开启' if enable_sue else '关闭'}\n自定义错误消息: {custom_error_message}\n启用自定义错误: {'开启' if enable_custom_error else '关闭'}")
     
     @filter.llm_tool(name="group_message")
     async def send_group_message(self, event: AstrMessageEvent, group_id: str, content: str) -> MessageEventResult:
