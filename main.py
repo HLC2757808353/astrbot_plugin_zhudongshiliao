@@ -104,26 +104,7 @@ class MyPlugin(Star):
         # 审计日志
         logger.info(f"发送私聊消息：目标用户 {user_id_str}，消息长度 {len(message)}")
         
-        # 尝试通过事件回复发送（仅当目标用户是当前事件发送者时）
-        if event and hasattr(event, 'reply') and hasattr(event, 'user_id'):
-            # 检查目标用户是否是当前事件发送者
-            try:
-                event_user_id = str(event.user_id)
-                if event_user_id == user_id_str:
-                    await event.reply(message, private=True)
-                    return
-            except (AttributeError, TypeError) as e:
-                # 如果获取user_id失败，继续使用其他发送方式
-                logger.warning(f"获取事件用户ID失败：{str(e)}")
-        # 尝试通过上下文发送
-        if hasattr(self.context, 'send_private_message'):
-            try:
-                await self.context.send_private_message(user_id_str, message)
-                return
-            except Exception as e:
-                logger.error(f"通过上下文发送私聊消息失败：{str(e)}")
-                logger.exception("上下文发送失败详情")
-        # 尝试通过消息会话发送
+        # 统一使用标准化方法发送消息
         try:
             platform_id = "qq"
             if event and hasattr(event, 'get_platform_id'):
@@ -136,9 +117,10 @@ class MyPlugin(Star):
             message_chain = MessageChain()
             message_chain.chain = [Plain(message)]
             await self.context.send_message(session, message_chain)
+            logger.info(f"私聊消息发送成功：目标用户 {user_id_str}")
         except Exception as e:
-            logger.error(f"通过消息会话发送私聊消息失败：{str(e)}")
-            logger.exception("消息会话发送失败详情")
+            logger.error(f"发送私聊消息失败：{str(e)}")
+            logger.exception("发送私聊消息失败详情")
     
     @filter.llm_tool(name="private_message")
     async def private_message(self, event: AstrMessageEvent, user_id: str, content: str) -> MessageEventResult:
@@ -167,6 +149,8 @@ class MyPlugin(Star):
             if not isinstance(config, dict):
                 # 如果配置不是字典，返回默认配置
                 return DEFAULT_CONFIG
+            # 为避免直接修改原始配置字典，创建副本
+            config = config.copy()
             # 确保所有必要的配置项都存在
             # 合并默认配置和实际配置
             for key, value in DEFAULT_CONFIG.items():
@@ -240,13 +224,21 @@ class MyPlugin(Star):
             # 确保群ID是字符串
             group_id_str = str(group_id)
             
-            # 使用平台特定的发送方式（aiocqhttp）
-            if hasattr(event, 'bot') and hasattr(event.bot, 'send_group_msg'):
-                await event.bot.send_group_msg(group_id=group_id_str, message=content)
-                return event.plain_result("群消息发送成功")
-            else:
-                return event.plain_result("群消息发送失败：不支持的平台或方法")
-                
+            # 统一使用标准化方法发送消息
+            platform_id = "qq"
+            if event and hasattr(event, 'get_platform_id'):
+                platform_id = event.get_platform_id()
+            session = MessageSession(
+                platform_name=platform_id,
+                message_type=MessageType.GROUP_MESSAGE,
+                session_id=group_id_str
+            )
+            message_chain = MessageChain()
+            message_chain.chain = [Plain(content)]
+            await self.context.send_message(session, message_chain)
+            logger.info(f"群消息发送成功：目标群 {group_id_str}")
+            return event.plain_result("群消息发送成功")
+            
         except (AttributeError, TypeError) as e:
             # 详细异常写入日志
             logger.error(f"群消息发送失败：{str(e)}")
