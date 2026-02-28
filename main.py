@@ -27,6 +27,40 @@ class MyPlugin(Star):
         self.message_rate_limit = defaultdict(list)  # {user_id: [timestamp1, timestamp2, ...]}
         self.rate_limit_window = 60  # 时间窗口（秒）
         self.rate_limit_max = 5  # 时间窗口内最大消息数
+        # 上次清理时间
+        self.last_cleanup_time = time.time()
+        self.cleanup_interval = 3600  # 清理间隔（秒）
+    
+    def _cleanup_rate_limit(self):
+        """
+        定期清理过期的频率限制记录
+        """
+        current_time = time.time()
+        # 检查是否需要清理
+        if current_time - self.last_cleanup_time < self.cleanup_interval:
+            return
+        
+        # 清理过期的记录
+        expired_keys = []
+        for user_id, timestamps in self.message_rate_limit.items():
+            # 过滤出未过期的时间戳
+            valid_timestamps = [
+                timestamp for timestamp in timestamps
+                if current_time - timestamp < self.rate_limit_window
+            ]
+            if valid_timestamps:
+                self.message_rate_limit[user_id] = valid_timestamps
+            else:
+                expired_keys.append(user_id)
+        
+        # 删除空记录
+        for user_id in expired_keys:
+            del self.message_rate_limit[user_id]
+        
+        # 更新上次清理时间
+        self.last_cleanup_time = current_time
+        if expired_keys:
+            logger.debug(f"清理了 {len(expired_keys)} 个过期的频率限制记录")
     
     def _check_rate_limit(self, user_id):
         """
@@ -40,6 +74,9 @@ class MyPlugin(Star):
         """
         user_id_str = str(user_id)
         current_time = time.time()
+        
+        # 定期清理过期记录
+        self._cleanup_rate_limit()
         
         # 清理过期的时间戳
         self.message_rate_limit[user_id_str] = [
@@ -75,26 +112,33 @@ class MyPlugin(Star):
                 if event_user_id == user_id_str:
                     await event.reply(message, private=True)
                     return
-            except Exception as e:
+            except (AttributeError, TypeError) as e:
                 # 如果获取user_id失败，继续使用其他发送方式
                 logger.warning(f"获取事件用户ID失败：{str(e)}")
-                pass
         # 尝试通过上下文发送
         if hasattr(self.context, 'send_private_message'):
-            await self.context.send_private_message(user_id_str, message)
-            return
+            try:
+                await self.context.send_private_message(user_id_str, message)
+                return
+            except Exception as e:
+                logger.error(f"通过上下文发送私聊消息失败：{str(e)}")
+                logger.exception("上下文发送失败详情")
         # 尝试通过消息会话发送
-        platform_id = "qq"
-        if event and hasattr(event, 'get_platform_id'):
-            platform_id = event.get_platform_id()
-        session = MessageSession(
-            platform_name=platform_id,
-            message_type=MessageType.FRIEND_MESSAGE,
-            session_id=user_id_str
-        )
-        message_chain = MessageChain()
-        message_chain.chain = [Plain(message)]
-        await self.context.send_message(session, message_chain)
+        try:
+            platform_id = "qq"
+            if event and hasattr(event, 'get_platform_id'):
+                platform_id = event.get_platform_id()
+            session = MessageSession(
+                platform_name=platform_id,
+                message_type=MessageType.FRIEND_MESSAGE,
+                session_id=user_id_str
+            )
+            message_chain = MessageChain()
+            message_chain.chain = [Plain(message)]
+            await self.context.send_message(session, message_chain)
+        except Exception as e:
+            logger.error(f"通过消息会话发送私聊消息失败：{str(e)}")
+            logger.exception("消息会话发送失败详情")
     
     @filter.llm_tool(name="private_message")
     async def private_message(self, event: AstrMessageEvent, user_id: str, content: str) -> MessageEventResult:
@@ -144,8 +188,11 @@ class MyPlugin(Star):
         """
         # 获取最新配置
         config = self._get_config()
-        admin_id = config.get("admin_id", "2757808353")
-        await self.send_private_message(admin_id, content, event)
+        admin_id = config.get("admin_id")
+        if admin_id:
+            await self.send_private_message(admin_id, content, event)
+        else:
+            logger.warning("管理员ID未配置，无法发送消息")
         event.stop_event()
         return event.plain_result("")
     
@@ -163,8 +210,11 @@ class MyPlugin(Star):
         # 获取最新配置
         config = self._get_config()
         if config.get("enable_sue", True):
-            admin_id = config.get("admin_id", "2757808353")
-            await self.send_private_message(admin_id, f"【告状】\n{content}", event)
+            admin_id = config.get("admin_id")
+            if admin_id:
+                await self.send_private_message(admin_id, f"【告状】\n{content}", event)
+            else:
+                logger.warning("管理员ID未配置，无法发送告状消息")
         event.stop_event()
         return event.plain_result("")
     
@@ -197,9 +247,15 @@ class MyPlugin(Star):
             else:
                 return event.plain_result("群消息发送失败：不支持的平台或方法")
                 
-        except Exception as e:
+        except (AttributeError, TypeError) as e:
             # 详细异常写入日志
             logger.error(f"群消息发送失败：{str(e)}")
+            # 对外返回通用失败文案
+            return event.plain_result("群消息发送失败：系统暂时无法发送消息，请稍后再试")
+        except Exception as e:
+            # 捕获其他异常
+            logger.error(f"群消息发送失败：{str(e)}")
+            logger.exception("群消息发送失败详情")
             # 对外返回通用失败文案
             return event.plain_result("群消息发送失败：系统暂时无法发送消息，请稍后再试")
     
@@ -218,6 +274,88 @@ class MyPlugin(Star):
         message = message.replace("{error_message}", error_message)
         message = message.replace("{error_code}", error_code)
         return message
+    
+    def _is_error_message(self, text: str) -> bool:
+        """
+        检测文本是否为错误消息
+        
+        Args:
+            text: 要检测的文本
+            
+        Returns:
+            bool: 是否为错误消息
+        """
+        # 定义错误关键词和模式
+        ERROR_KEYWORDS = [
+            "错误", "失败", "error", "failed", "Error", "Failed",
+            "LLM 响应错误", "All chat models failed", "AuthenticationError",
+            "API key is invalid", "Error code:", "Exception", "exception"
+        ]
+        
+        # 1. 检查是否包含错误关键词
+        has_error_keyword = any(keyword in text for keyword in ERROR_KEYWORDS)
+        if not has_error_keyword:
+            return False
+        
+        # 2. 检查上下文约束，避免普通文本被误识别
+        has_technical_terms = any(term in text for term in [
+            "API", "code", "响应", "请求", 
+            "timeout", "connection", "invalid", "token", "key",
+            "timeout", "error code", "exception", "failed to", "cannot", "unable"
+        ])
+        
+        # 3. 检查文本长度和结构
+        is_likely_error = False
+        if has_technical_terms:
+            is_likely_error = True
+        elif "Error code:" in text:
+            is_likely_error = True
+        elif "Exception" in text or "exception" in text:
+            is_likely_error = True
+        elif len(text) > 50 and ("错误" in text or "error" in text.lower()) and any(term in text for term in ["API", "code", "请求", "响应"]):
+            is_likely_error = True
+        
+        return is_likely_error
+    
+    def _extract_error_info(self, error_message):
+        """
+        从错误消息中提取错误代码和详细信息
+        
+        Args:
+            error_message: 原始错误消息
+            
+        Returns:
+            tuple: (error_code, error_detail)
+        """
+        error_code = ""
+        error_detail = error_message
+        
+        # 尝试从多种格式中提取错误信息
+        try:
+            # 格式1: Error code: 400 - {'code': 20012, 'message': 'Model does not exist. Please check it carefully.', 'data': None}
+            # 提取外层错误代码
+            outer_match = re.search(r'Error code: (\d+)', error_message)
+            if outer_match:
+                error_code = outer_match.group(1)
+            
+            # 提取内层JSON中的错误信息
+            json_match = re.search(r'\{[^}]*\}', error_message)
+            if json_match:
+                import json
+                json_str = json_match.group(0)
+                try:
+                    error_data = json.loads(json_str)
+                    if isinstance(error_data, dict):
+                        if 'code' in error_data:
+                            error_code = str(error_data['code'])
+                        if 'message' in error_data:
+                            error_detail = error_data['message']
+                except json.JSONDecodeError:
+                    pass
+        except Exception:
+            pass
+        
+        return error_code, error_detail
     
     @filter.on_decorating_result()
     async def on_decorating_result(self, event: AstrMessageEvent):
@@ -240,13 +378,6 @@ class MyPlugin(Star):
             is_error = False
             error_message = ""
             
-            # 定义错误关键词和模式
-            ERROR_KEYWORDS = [
-                "错误", "失败", "error", "failed", "Error", "Failed",
-                "LLM 响应错误", "All chat models failed", "AuthenticationError",
-                "API key is invalid", "Error code:", "Exception", "exception"
-            ]
-            
             # 检查不同格式的结果对象
             if hasattr(result, 'chain') and result.chain:
                 # 检查消息链
@@ -255,89 +386,30 @@ class MyPlugin(Star):
                     if hasattr(comp, 'text') and comp.text:
                         text = comp.text
                         logger.debug(f"消息链组件文本: {text[:100]}...")
-                        # 改进的错误识别逻辑
-                        # 1. 检查是否包含错误关键词
-                        has_error_keyword = any(keyword in text for keyword in ERROR_KEYWORDS)
-                        logger.debug(f"是否包含错误关键词: {has_error_keyword}")
-                        
-                        if has_error_keyword:
-                            # 2. 检查上下文约束，避免普通文本被误识别
-                            # 例如，错误消息通常包含更多技术术语或特定格式
-                            has_technical_terms = any(term in text for term in [
-                                "API", "code", "响应", "请求", 
-                                "timeout", "connection", "invalid", "token", "key",
-                                "timeout", "error code", "exception", "failed to", "cannot", "unable"
-                            ])
-                            logger.debug(f"是否包含技术术语: {has_technical_terms}")
-                            
-                            # 3. 检查文本长度和结构
-                            is_likely_error = False
-                            if has_technical_terms:
-                                is_likely_error = True
-                            elif "Error code:" in text:
-                                is_likely_error = True
-                            elif "Exception" in text or "exception" in text:
-                                is_likely_error = True
-                            elif len(text) > 50 and ("错误" in text or "error" in text.lower()) and any(term in text for term in ["API", "code", "请求", "响应"]):
-                                # 较长的包含错误关键词和技术术语的文本更可能是错误消息
-                                is_likely_error = True
-                            
-                            logger.debug(f"是否可能是错误消息: {is_likely_error}")
-                            
-                            if is_likely_error:
-                                is_error = True
-                                error_message = text
-                                logger.debug(f"识别为错误消息: {error_message[:100]}...")
-                                break
+                        if self._is_error_message(text):
+                            is_error = True
+                            error_message = text
+                            logger.debug(f"识别为错误消息: {error_message[:100]}...")
+                            break
             elif hasattr(result, 'text') and result.text:
                 # 检查文本结果
                 text = result.text
                 logger.debug(f"检查文本结果: {text[:100]}...")
-                # 改进的错误识别逻辑
-                has_error_keyword = any(keyword in text for keyword in ERROR_KEYWORDS)
-                logger.debug(f"是否包含错误关键词: {has_error_keyword}")
-                
-                if has_error_keyword:
-                    # 同样的上下文约束检查
-                    has_technical_terms = any(term in text for term in [
-                        "API", "code", "响应", "请求", 
-                        "timeout", "connection", "invalid", "token", "key",
-                        "timeout", "error code", "exception", "failed to", "cannot", "unable"
-                    ])
-                    logger.debug(f"是否包含技术术语: {has_technical_terms}")
-                    
-                    is_likely_error = False
-                    if has_technical_terms:
-                        is_likely_error = True
-                    elif "Error code:" in text:
-                        is_likely_error = True
-                    elif "Exception" in text or "exception" in text:
-                        is_likely_error = True
-                    elif len(text) > 50 and ("错误" in text or "error" in text.lower()) and any(term in text for term in ["API", "code", "请求", "响应"]):
-                        # 较长的包含错误关键词和技术术语的文本更可能是错误消息
-                        is_likely_error = True
-                    
-                    logger.debug(f"是否可能是错误消息: {is_likely_error}")
-                    
-                    if is_likely_error:
-                        is_error = True
-                        error_message = text
-                        logger.debug(f"识别为错误消息: {error_message[:100]}...")
+                if self._is_error_message(text):
+                    is_error = True
+                    error_message = text
+                    logger.debug(f"识别为错误消息: {error_message[:100]}...")
             
             # 如果是错误消息，替换为自定义报错
             if is_error:
                 # 获取最新自定义报错消息
                 custom_error = config.get("custom_error_message", "请有人告诉引灯续昼我的AI出现了问题")
                 
-                # 提取错误代码
-                error_code = ""
-                import re
-                match = re.search(r'Error code: (\d+)', error_message)
-                if match:
-                    error_code = match.group(1)
+                # 提取错误代码和详细信息
+                error_code, error_detail = self._extract_error_info(error_message)
                 
                 # 替换变量
-                custom_error = self._replace_error_variables(custom_error, error_message, error_code)
+                custom_error = self._replace_error_variables(custom_error, error_detail, error_code)
                 
                 # 替换结果的消息链
                 if hasattr(result, 'chain'):
