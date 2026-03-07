@@ -19,7 +19,7 @@ DEFAULT_CONFIG = {
     "enable_custom_error": True
 }
 
-@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊功能作为工具供大模型调用。", "0.4.2")
+@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊功能作为工具供大模型调用。", "0.4.3")
 class MyPlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -73,7 +73,7 @@ class MyPlugin(Star):
         return True
 
     async def _execute_send(self, target_id: str, content: str, msg_type: MessageType, event: AstrMessageEvent = None):
-        """底层统一发送方法（精简重复代码）"""
+        """底层统一发送方法"""
         target_id_str = str(target_id)
         
         if not self._check_rate_limit(target_id_str):
@@ -95,7 +95,7 @@ class MyPlugin(Star):
             logger.error(f"消息发送失败：{str(e)}")
 
     # ---------------------------------------------------------
-    # LLM 工具区：全面恢复 stop_event 拦截，为你省下每一次 Token 计费
+    # LLM 工具区：拦截大模型二次请求，节约费用
     # ---------------------------------------------------------
 
     @filter.llm_tool(name="private_message")
@@ -108,7 +108,6 @@ class MyPlugin(Star):
             content(string): 消息内容
         """
         await self._execute_send(user_id, content, MessageType.FRIEND_MESSAGE, event)
-        # 强制阻断，阻止大模型发起二次请求
         event.stop_event()
         return event.plain_result("")
     
@@ -126,7 +125,6 @@ class MyPlugin(Star):
             await self._execute_send(admin_id, content, MessageType.FRIEND_MESSAGE, event)
         else:
             logger.warning("管理员ID未配置，无法发送消息")
-        # 强制阻断
         event.stop_event()
         return event.plain_result("")
     
@@ -147,7 +145,6 @@ class MyPlugin(Star):
                 await self._execute_send(admin_id, f"【告状】\n{content}", MessageType.FRIEND_MESSAGE, event)
             else:
                 logger.warning("管理员ID未配置，无法发送告状消息")
-        # 强制阻断
         event.stop_event()
         return event.plain_result("")
     
@@ -161,12 +158,11 @@ class MyPlugin(Star):
             content(string): 消息内容
         """
         await self._execute_send(group_id, content, MessageType.GROUP_MESSAGE, event)
-        # 强制阻断
         event.stop_event()
         return event.plain_result("")
 
     # ---------------------------------------------------------
-    # 错误拦截方法区（已修复 JSON 正则匹配漏洞）
+    # 错误拦截方法区（按照 Code Review 意见深度重构）
     # ---------------------------------------------------------
 
     def _replace_error_variables(self, message, error_message="", error_code=""):
@@ -175,41 +171,63 @@ class MyPlugin(Star):
         return message
     
     def _is_error_message(self, text: str) -> bool:
-        ERROR_KEYWORDS = [
-            "错误", "失败", "error", "failed", "Error", "Failed",
+        """
+        基于分级策略检测文本是否为报错信息
+        """
+        # 1. 强特征：只要包含这些词汇，直接判定为报错
+        STRONG_KEYWORDS = [
             "LLM 响应错误", "All chat models failed", "AuthenticationError",
-            "API key is invalid", "Error code:", "Exception", "exception"
+            "API key is invalid", "Error code:", "Exception:"
         ]
-        if not any(keyword in text for keyword in ERROR_KEYWORDS):
+        if any(keyword in text for keyword in STRONG_KEYWORDS):
+            return True
+            
+        # 2. 弱特征：日常用语中也会出现的错误词汇
+        WEAK_KEYWORDS = ["错误", "失败", "error", "failed", "Exception", "exception"]
+        has_weak_error = any(keyword in text for keyword in WEAK_KEYWORDS)
+        
+        if not has_weak_error:
             return False
             
-        has_technical_terms = any(term in text for term in [
-            "API", "code", "响应", "请求", "timeout", "connection", 
-            "invalid", "token", "key", "error code", "exception"
-        ])
+        # 3. 上下文约束：包含弱特征的前提下，必须包含技术词汇才判定为报错
+        TECH_TERMS = ["API", "code", "响应", "请求", "timeout", "connection", "invalid", "token", "key"]
+        has_technical_terms = any(term in text for term in TECH_TERMS)
         
-        return has_technical_terms or "Error code:" in text or "Exception" in text
+        return has_technical_terms
     
     def _extract_error_info(self, error_message):
+        """
+        提取错误代码和详细信息，彻底规避正则性能陷阱
+        """
         error_code = ""
         error_detail = error_message
+        
         try:
-            if match := re.search(r'Error code: (\d+)', error_message):
+            # 1. 提取错误代码 (轻量正则，无性能风险)
+            if match := re.search(r'Error code:\s*(\d+)', error_message, re.IGNORECASE):
                 error_code = match.group(1)
             
-            # 强化：支持多行嵌套报错的提取
-            if json_match := re.search(r'(\{.*\})', error_message, re.DOTALL):
+            # 2. 提取 JSON 数据 (采用 find/rfind 代替贪婪正则匹配，O(N) 复杂度，规避灾难性回溯)
+            start_idx = error_message.find('{')
+            end_idx = error_message.rfind('}')
+            
+            # 确保找到了有效的大括号包裹范围
+            if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                json_str = error_message[start_idx:end_idx+1]
                 try:
-                    error_data = json.loads(json_match.group(1))
+                    error_data = json.loads(json_str)
                     if isinstance(error_data, dict):
-                        if 'code' in error_data:
-                            error_code = str(error_data['code'])
-                        if 'message' in error_data:
-                            error_detail = error_data['message']
+                        # 如果外层没有找到 code，尝试从字典内部读取
+                        error_code = str(error_data.get('code', error_code))
+                        error_detail = error_data.get('message', error_detail)
                 except json.JSONDecodeError:
-                    pass
-        except Exception:
-            pass
+                    # JSON 解析失败属于正常情况（可能是无关大括号），用 debug 级别静默记录
+                    logger.debug("报错文本中的 JSON 解析失败，跳过提取。", exc_info=True)
+                    
+        except Exception as e:
+            # 移除裸 pass，将非预期的解析异常显式记录下来，避免掩盖潜在的 TypeError 等问题
+            logger.debug(f"提取报错详细信息时发生异常: {e}", exc_info=True)
+            
         return error_code, error_detail
     
     @filter.on_decorating_result()
