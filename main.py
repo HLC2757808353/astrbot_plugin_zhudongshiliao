@@ -10,28 +10,30 @@ import time
 import re
 import json
 from collections import defaultdict, deque
+from typing import Dict, Deque, Optional
 
 # 默认配置常量
 DEFAULT_CONFIG = {
     "admin_id": "",  # 空字符串，强制用户在WebUI中设置
     "enable_sue": True,
     "custom_error_message": "请有人告诉引灯续昼我的AI出现了问题",
-    "enable_custom_error": True
+    "enable_custom_error": True,
+    "enable_tool_feedback": True  # 是否向大模型反馈工具执行结果
 }
 
 @register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊功能作为工具供大模型调用。", "0.4.3")
 class MyPlugin(Star):
-    def __init__(self, context: Context, config=None):
+    def __init__(self, context: Context, config: Optional[Dict] = None):
         super().__init__(context)
         # 深度合并配置，常驻内存提高性能
-        self.config = {**DEFAULT_CONFIG, **(config or {})}
+        self.config: Dict = {**DEFAULT_CONFIG, **(config or {})}
         
         # 频率限制存储
-        self.message_rate_limit = defaultdict(deque)
-        self.rate_limit_window = 60
-        self.rate_limit_max = 5
-        self.last_cleanup_time = time.time()
-        self.cleanup_interval = 3600
+        self.message_rate_limit: Dict[str, Deque[float]] = defaultdict(deque)
+        self.rate_limit_window: int = 60
+        self.rate_limit_max: int = 5
+        self.last_cleanup_time: float = time.time()
+        self.cleanup_interval: int = 3600
 
     def _cleanup_rate_limit(self) -> None:
         """定期清理过期的频率限制记录"""
@@ -113,8 +115,10 @@ class MyPlugin(Star):
             content(string): 消息内容
         """
         await self._execute_send(user_id, content, MessageType.FRIEND_MESSAGE, event)
-        event.stop_event()
-        return event.plain_result(f"私聊消息已发送给用户 {user_id}")
+        if self.config.get("enable_tool_feedback", True):
+            return event.plain_result(f"私聊消息已发送给用户 {user_id}")
+        else:
+            return event.plain_result("")
 
     @filter.llm_tool(name="message_to_admin")
     async def message_to_admin(self, event: AstrMessageEvent, content: str) -> MessageEventResult:
@@ -128,12 +132,16 @@ class MyPlugin(Star):
         admin_id = self.config.get("admin_id")
         if admin_id:
             await self._execute_send(admin_id, content, MessageType.FRIEND_MESSAGE, event)
-            event.stop_event()
-            return event.plain_result("消息已发送给管理员")
+            if self.config.get("enable_tool_feedback", True):
+                return event.plain_result("消息已发送给管理员")
+            else:
+                return event.plain_result("")
         else:
             logger.warning("管理员ID未配置，无法发送消息")
-            event.stop_event()
-            return event.plain_result("管理员ID未配置，无法发送消息")
+            if self.config.get("enable_tool_feedback", True):
+                return event.plain_result("管理员ID未配置，无法发送消息")
+            else:
+                return event.plain_result("")
 
     @filter.llm_tool(name="sue_to_admin")
     async def sue_to_admin(self, event: AstrMessageEvent, content: str) -> MessageEventResult:
@@ -150,15 +158,21 @@ class MyPlugin(Star):
             admin_id = self.config.get("admin_id")
             if admin_id:
                 await self._execute_send(admin_id, f"【告状】\n{content}", MessageType.FRIEND_MESSAGE, event)
-                event.stop_event()
-                return event.plain_result("告状消息已发送给管理员")
+                if self.config.get("enable_tool_feedback", True):
+                    return event.plain_result("告状消息已发送给管理员")
+                else:
+                    return event.plain_result("")
             else:
                 logger.warning("管理员ID未配置，无法发送告状消息")
-                event.stop_event()
-                return event.plain_result("管理员ID未配置，无法发送告状消息")
+                if self.config.get("enable_tool_feedback", True):
+                    return event.plain_result("管理员ID未配置，无法发送告状消息")
+                else:
+                    return event.plain_result("")
         else:
-            event.stop_event()
-            return event.plain_result("告状功能已禁用")
+            if self.config.get("enable_tool_feedback", True):
+                return event.plain_result("告状功能已禁用")
+            else:
+                return event.plain_result("")
 
     @filter.llm_tool(name="group_message")
     async def send_group_message(self, event: AstrMessageEvent, group_id: str, content: str) -> MessageEventResult:
@@ -170,8 +184,10 @@ class MyPlugin(Star):
             content(string): 消息内容
         """
         await self._execute_send(group_id, content, MessageType.GROUP_MESSAGE, event)
-        event.stop_event()
-        return event.plain_result(f"群消息已发送到群 {group_id}")
+        if self.config.get("enable_tool_feedback", True):
+            return event.plain_result(f"群消息已发送到群 {group_id}")
+        else:
+            return event.plain_result("")
 
     # ---------------------------------------------------------
     # 错误拦截方法区（按照 Code Review 意见深度重构）
@@ -220,22 +236,25 @@ class MyPlugin(Star):
                 error_code = match.group(1)
             
             # 2. 提取 JSON 数据 (使用大括号平衡法，确保提取完整的 JSON 对象)
-            start_idx = error_message.find('{')
-            if start_idx != -1:
-                # 跟踪大括号的嵌套层级
+            if '{' in error_message:
+                # 找到第一个 '{' 作为 JSON 开始
+                start_pos = error_message.find('{')
                 brace_count = 1
-                end_idx = start_idx + 1
+                end_pos = start_pos + 1
                 
-                while end_idx < len(error_message) and brace_count > 0:
-                    if error_message[end_idx] == '{':
+                # 平衡大括号，找到匹配的结束位置
+                for char in error_message[end_pos:]:
+                    if char == '{':
                         brace_count += 1
-                    elif error_message[end_idx] == '}':
+                    elif char == '}':
                         brace_count -= 1
-                    end_idx += 1
+                        if brace_count == 0:
+                            break
+                    end_pos += 1
                 
                 # 确保找到了匹配的大括号
                 if brace_count == 0:
-                    json_str = error_message[start_idx:end_idx]
+                    json_str = error_message[start_pos:end_pos + 1]
                     try:
                         error_data = json.loads(json_str)
                         if isinstance(error_data, dict):
