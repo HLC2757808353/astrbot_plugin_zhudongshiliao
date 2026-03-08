@@ -8,6 +8,7 @@ from astrbot.core.platform.message_type import MessageType
 from astrbot.api import logger
 import time
 import re
+import json
 from collections import defaultdict
 
 # 默认配置常量
@@ -61,7 +62,7 @@ class MyPlugin(Star):
         self.last_cleanup_time = current_time
         if expired_keys:
             logger.debug(f"清理了 {len(expired_keys)} 个过期的频率限制记录")
-    
+
     def _check_rate_limit(self, user_id):
         """
         检查频率限制
@@ -75,10 +76,11 @@ class MyPlugin(Star):
         user_id_str = str(user_id)
         current_time = time.time()
         
-        # 定期清理过期记录
-        self._cleanup_rate_limit()
+        # 定期清理过期记录（全局清理）
+        if current_time - self.last_cleanup_time >= self.cleanup_interval:
+            self._cleanup_rate_limit()
         
-        # 清理过期的时间戳
+        # 只清理当前用户的过期时间戳
         self.message_rate_limit[user_id_str] = [
             timestamp for timestamp in self.message_rate_limit[user_id_str]
             if current_time - timestamp < self.rate_limit_window
@@ -91,7 +93,7 @@ class MyPlugin(Star):
         # 记录当前时间戳
         self.message_rate_limit[user_id_str].append(current_time)
         return True
-    
+
     async def send_private_message(self, user_id, message, event=None):
         # 发送私聊消息
         user_id_str = str(user_id)
@@ -121,7 +123,7 @@ class MyPlugin(Star):
         except Exception as e:
             logger.error(f"发送私聊消息失败：{str(e)}")
             logger.exception("发送私聊消息失败详情")
-    
+
     @filter.llm_tool(name="private_message")
     async def private_message(self, event: AstrMessageEvent, user_id: str, content: str) -> MessageEventResult:
         """
@@ -134,7 +136,7 @@ class MyPlugin(Star):
         await self.send_private_message(user_id, content, event)
         event.stop_event()
         return event.plain_result("")
-    
+
     def _get_config(self):
         """
         获取最新配置，确保配置同步
@@ -160,7 +162,7 @@ class MyPlugin(Star):
         except Exception:
             # 发生异常时返回默认配置
             return DEFAULT_CONFIG
-    
+
     @filter.llm_tool(name="message_to_admin")
     async def message_to_admin(self, event: AstrMessageEvent, content: str) -> MessageEventResult:
         """
@@ -179,7 +181,7 @@ class MyPlugin(Star):
             logger.warning("管理员ID未配置，无法发送消息")
         event.stop_event()
         return event.plain_result("")
-    
+
     @filter.llm_tool(name="sue_to_admin")
     async def sue_to_admin(self, event: AstrMessageEvent, content: str) -> MessageEventResult:
         """
@@ -201,8 +203,7 @@ class MyPlugin(Star):
                 logger.warning("管理员ID未配置，无法发送告状消息")
         event.stop_event()
         return event.plain_result("")
-    
-    
+
     @filter.llm_tool(name="group_message")
     async def send_group_message(self, event: AstrMessageEvent, group_id: str, content: str) -> MessageEventResult:
         """
@@ -242,6 +243,7 @@ class MyPlugin(Star):
         except (AttributeError, TypeError) as e:
             # 详细异常写入日志
             logger.error(f"群消息发送失败：{str(e)}")
+            logger.exception("群消息发送失败详情")
             # 对外返回通用失败文案
             return event.plain_result("群消息发送失败：系统暂时无法发送消息，请稍后再试")
         except Exception as e:
@@ -250,7 +252,7 @@ class MyPlugin(Star):
             logger.exception("群消息发送失败详情")
             # 对外返回通用失败文案
             return event.plain_result("群消息发送失败：系统暂时无法发送消息，请稍后再试")
-    
+
     def _replace_error_variables(self, message, error_message="", error_code=""):
         """
         替换错误消息中的变量
@@ -266,7 +268,7 @@ class MyPlugin(Star):
         message = message.replace("{error_message}", error_message)
         message = message.replace("{error_code}", error_code)
         return message
-    
+
     def _is_error_message(self, text: str) -> bool:
         """
         检测文本是否为错误消息
@@ -308,7 +310,7 @@ class MyPlugin(Star):
             is_likely_error = True
         
         return is_likely_error
-    
+
     def _extract_error_info(self, error_message):
         """
         从错误消息中提取错误代码和详细信息
@@ -331,19 +333,34 @@ class MyPlugin(Star):
                 error_code = outer_match.group(1)
             
             # 提取内层JSON中的错误信息
-            json_match = re.search(r'\{[^}]*\}', error_message)
-            if json_match:
-                import json
-                json_str = json_match.group(0)
-                try:
-                    error_data = json.loads(json_str)
-                    if isinstance(error_data, dict):
-                        if 'code' in error_data:
-                            error_code = str(error_data['code'])
-                        if 'message' in error_data:
-                            error_detail = error_data['message']
-                except json.JSONDecodeError:
-                    pass
+            if '{' in error_message:
+                # 找到第一个 '{' 作为 JSON 开始
+                start_pos = error_message.find('{')
+                brace_count = 1
+                end_pos = start_pos + 1
+                
+                # 平衡大括号，找到匹配的结束位置
+                for char in error_message[end_pos:]:
+                    if char == '{':
+                        brace_count += 1
+                    elif char == '}':
+                        brace_count -= 1
+                        if brace_count == 0:
+                            break
+                    end_pos += 1
+                
+                # 确保找到了匹配的大括号
+                if brace_count == 0:
+                    json_str = error_message[start_pos:end_pos + 1]
+                    try:
+                        error_data = json.loads(json_str)
+                        if isinstance(error_data, dict):
+                            if 'code' in error_data:
+                                error_code = str(error_data['code'])
+                            if 'message' in error_data:
+                                error_detail = error_data['message']
+                    except json.JSONDecodeError:
+                        pass
         except Exception:
             pass
         
@@ -405,7 +422,16 @@ class MyPlugin(Star):
                 
                 # 替换结果的消息链
                 if hasattr(result, 'chain'):
-                    result.chain = [Plain(custom_error)]
+                    # 只替换包含错误消息的组件，保留其他组件
+                    new_chain = []
+                    for comp in result.chain:
+                        if hasattr(comp, 'text') and comp.text and self._is_error_message(comp.text):
+                            # 替换错误消息组件
+                            new_chain.append(Plain(custom_error))
+                        else:
+                            # 保留其他组件
+                            new_chain.append(comp)
+                    result.chain = new_chain
                 elif hasattr(result, 'text'):
                     result.text = custom_error
                 
