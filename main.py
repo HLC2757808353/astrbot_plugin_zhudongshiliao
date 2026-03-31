@@ -3,6 +3,7 @@ from astrbot.api.star import Context, Star, register
 from astrbot.api.event import filter
 from astrbot.api.event import MessageChain
 from astrbot.api.message_components import Plain
+from astrbot.api.provider import LLMResponse
 from astrbot.core.platform.message_session import MessageSession
 from astrbot.core.platform.message_type import MessageType
 from astrbot.api import logger
@@ -439,6 +440,30 @@ class MyPlugin(Star):
             # 记录异常，确保钩子不会崩溃
             logger.error(f"错误消息替换失败：{str(e)}")
             logger.exception("错误消息替换异常详情")
-    
+
+    @filter.on_llm_response()
+    async def on_llm_response(self, event: AstrMessageEvent, response: LLMResponse) -> None:
+        """
+        拦截 LLM 错误响应
+        当 LLM 调用失败时（如网络错误、流式响应中断等），role 会是 "err"
+        """
+        config = self._get_config()
+        if not config.get("enable_custom_error", True):
+            return
+        
+        if response.role != "err":
+            return
+        
+        logger.info(f"检测到 LLM 错误响应: {response.completion_text[:100] if response.completion_text else '无内容'}...")
+        
+        custom_error = config.get("custom_error_message", "请有人告诉引灯续昼我的AI出现了问题")
+        
+        error_code, error_detail = self._extract_error_info(response.completion_text or "")
+        custom_error = self._replace_error_variables(custom_error, error_detail, error_code)
+        
+        response.completion_text = custom_error
+        
+        logger.info(f"已将 LLM 错误响应替换为: {custom_error}")
+
     async def terminate(self):
         pass
