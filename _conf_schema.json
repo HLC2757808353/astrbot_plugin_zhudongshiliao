@@ -41,7 +41,7 @@
   },
   "proactive_reply_start_hour": {
     "description": "主动回复时间窗口 - 开始小时（24小时制）",
-    "type": "number",
+    "type": "int",
     "default": 9,
     "hint": "例如：9 表示上午9点开始",
     "editable": true,
@@ -49,7 +49,7 @@
   },
   "proactive_reply_end_hour": {
     "description": "主动回复时间窗口 - 结束小时（24小时制）",
-    "type": "number",
+    "type": "int",
     "default": 23,
     "hint": "例如：23 表示晚上11点结束（不含该时刻）",
     "editable": true,
@@ -57,7 +57,7 @@
   },
   "proactive_reply_min_interval": {
     "description": "主动回复最小间隔（秒）",
-    "type": "number",
+    "type": "int",
     "default": 1800,
     "hint": "两次主动回复之间的最小等待时间，默认30分钟（1800秒）。每次触发后会在此值和最大间隔之间随机选择",
     "editable": true,
@@ -65,7 +65,7 @@
   },
   "proactive_reply_max_interval": {
     "description": "主动回复最大间隔（秒）",
-    "type": "number",
+    "type": "int",
     "default": 7200,
     "hint": "两次主动回复之间的最大等待时间，默认2小时（7200秒）。随机性让AI的行为更自然",
     "editable": true,
@@ -81,7 +81,7 @@
   },
   "immersive_followup_timeout": {
     "description": "对话延续超时时间（秒）",
-    "type": "number",
+    "type": "int",
     "default": 300,
     "hint": "AI发出可能需要回复的消息后，等待管理员回复的超时时间。默认300秒（5分钟）。超过此时间未回复则调用LLM基于完整上下文生成延续内容。QQ场景建议设置较长（300-600秒）",
     "editable": true,
@@ -89,7 +89,7 @@
   },
   "immersive_followup_max_rounds": {
     "description": "对话延续最大轮次",
-    "type": "number",
+    "type": "int",
     "default": 3,
     "hint": "单次对话中最多连续延续几次。达到上限后停止，防止无限延续造成骚扰和API浪费。每轮都会消耗一次LLM调用且AI可选择保持沉默。默认3轮",
     "editable": true,
