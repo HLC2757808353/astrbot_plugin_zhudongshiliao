@@ -1,9 +1,9 @@
 {
   "admin_id": {
-    "description": "管理员ID，用于接收告状和消息",
+    "description": "管理员ID，用于接收告状、主动回复和对话延续消息（必填）",
     "type": "string",
-    "default": "123456789",
-    "hint": "请输入唯一的管理员ID",
+    "default": "",
+    "hint": "请输入唯一的管理员ID。所有新功能（主动回复、对话延续）仅对管理员生效，不会对其他人触发，避免额外API花费",
     "editable": true,
     "display_name": "管理员ID"
   },
@@ -11,7 +11,7 @@
     "description": "是否启用告状功能",
     "type": "bool",
     "default": true,
-    "hint": "开启后，大模型可以使用告状功能向管理员发送消息",
+    "hint": "开启后，大模型可以使用告状功能向管理员发送消息（静默执行，不终止对话）",
     "editable": true,
     "display_name": "启用告状"
   },
@@ -19,7 +19,7 @@
     "description": "自定义报错消息",
     "type": "text",
     "default": "请有人告诉引灯续昼我的AI出现了问题",
-    "hint": "当AI出现错误时，将使用此消息回复用户。支持使用变量：{error_message}（系统错误消息）、{error_code}（错误代码）",
+    "hint": "当AI出现错误时，将使用此消息回复用户。支持变量：{error_message}（系统错误消息）、{error_code}（错误代码）",
     "editable": true,
     "display_name": "自定义报错消息"
   },
@@ -27,8 +27,80 @@
     "description": "是否启用自定义报错",
     "type": "bool",
     "default": true,
-    "hint": "开启后，AI出现错误时将使用自定义报错消息",
+    "hint": "开启后，AI出现错误时将使用自定义报错消息替换系统原始报错",
     "editable": true,
     "display_name": "启用自定义报错"
+  },
+  "proactive_reply_enabled": {
+    "description": "是否启用AI主动回复功能（实验性，消耗LLM API额度）",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后，当管理员长时间未发消息时，插件会获取完整会话上下文并调用LLM让AI基于对话历史自己组织语言生成主动联系的消息发给管理员。每次触发都会消耗一次LLM API调用。仅在配置的时间窗口内生效。",
+    "editable": true,
+    "display_name": "启用AI主动回复"
+  },
+  "proactive_reply_start_hour": {
+    "description": "主动回复时间窗口 - 开始小时（24小时制）",
+    "type": "number",
+    "default": 9,
+    "hint": "例如：9 表示上午9点开始",
+    "editable": true,
+    "display_name": "主动回复开始时间"
+  },
+  "proactive_reply_end_hour": {
+    "description": "主动回复时间窗口 - 结束小时（24小时制）",
+    "type": "number",
+    "default": 23,
+    "hint": "例如：23 表示晚上11点结束（不含该时刻）",
+    "editable": true,
+    "display_name": "主动回复结束时间"
+  },
+  "proactive_reply_min_interval": {
+    "description": "主动回复最小间隔（秒）",
+    "type": "number",
+    "default": 1800,
+    "hint": "两次主动回复之间的最小等待时间，默认30分钟（1800秒）。每次触发后会在此值和最大间隔之间随机选择",
+    "editable": true,
+    "display_name": "主动回复最小间隔(秒)"
+  },
+  "proactive_reply_max_interval": {
+    "description": "主动回复最大间隔（秒）",
+    "type": "number",
+    "default": 7200,
+    "hint": "两次主动回复之间的最大等待时间，默认2小时（7200秒）。随机性让AI的行为更自然",
+    "editable": true,
+    "display_name": "主动回复最大间隔(秒)"
+  },
+  "immersive_followup_enabled": {
+    "description": "是否启用AI沉浸式对话延续功能（实验性，消耗LLM API额度）",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后，当AI对管理员发出的消息包含问句或情感表达且管理员未在超时时间内回复时，插件会获取完整会话上下文并调用LLM让AI基于对话历史自己决定是否要追加说什么——不限于追问，也可以是补充说明、表达情感、道歉或选择沉默。仅对管理员的对话生效。",
+    "editable": true,
+    "display_name": "启用AI沉浸式对话延续"
+  },
+  "immersive_followup_timeout": {
+    "description": "对话延续超时时间（秒）",
+    "type": "number",
+    "default": 300,
+    "hint": "AI发出可能需要回复的消息后，等待管理员回复的超时时间。默认300秒（5分钟）。超过此时间未回复则调用LLM基于完整上下文生成延续内容。QQ场景建议设置较长（300-600秒）",
+    "editable": true,
+    "display_name": "对话延续超时时间(秒)"
+  },
+  "immersive_followup_max_rounds": {
+    "description": "对话延续最大轮次",
+    "type": "number",
+    "default": 3,
+    "hint": "单次对话中最多连续延续几次。达到上限后停止，防止无限延续造成骚扰和API浪费。每轮都会消耗一次LLM调用且AI可选择保持沉默。默认3轮",
+    "editable": true,
+    "display_name": "对话延续最大轮次"
+  },
+  "llm_provider_id": {
+    "description": "用于生成主动回复和对话延续内容的LLM模型Provider ID（留空自动检测）",
+    "type": "string",
+    "default": "",
+    "hint": "指定使用哪个LLM模型来生成主动回复和对话延续内容。留空则自动选择第一个可用的模型。可在AstrBot的模型设置中查看Provider ID",
+    "editable": true,
+    "display_name": "LLM模型ID"
   }
 }
