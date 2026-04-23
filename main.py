@@ -31,7 +31,7 @@ DEFAULT_CONFIG = {
 }
 
 
-@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.5.9")
+@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.6.0")
 class MyPlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -49,6 +49,8 @@ class MyPlugin(Star):
         self._followup_state = {}
         
         self._lock = asyncio.Lock()
+        
+        self._admin_umo = None
 
     def _cleanup_rate_limit(self):
         current_time = time.time()
@@ -779,9 +781,9 @@ class MyPlugin(Star):
         return ""
 
     async def _call_llm_for_proactive(self) -> str | None:
-        umo = self._get_admin_umo()
+        umo = self._admin_umo
         if not umo:
-            logger.warning("无法获取管理员UMO，无法生成主动回复")
+            logger.warning("尚未获取到管理员的会话UMO，无法生成主动回复。请先与管理员私聊一次。")
             return None
         
         try:
@@ -797,10 +799,8 @@ class MyPlugin(Star):
         try:
             conv_id = await self.context.conversation_manager.get_curr_conversation_id(umo)
             if not conv_id:
-                conv_id = await self.context.conversation_manager.new_conversation(
-                    unified_msg_origin=umo,
-                    platform_id=self._get_first_platform_id() or "default",
-                )
+                logger.warning("未找到管理员的会话，无法生成主动回复")
+                return None
             
             conv = await self.context.conversation_manager.get_conversation(umo, conv_id)
             history = []
@@ -820,10 +820,8 @@ class MyPlugin(Star):
             else:
                 system_prompt = persona_prompt + "\n\n系统提示：对方已经很久没有搭理你了，你现在要主动去找一下对方。保持你自己的说话风格，自然地发一条消息就行。"
             
-            prompt = "主动联系对方"
-            
             contexts = []
-            for msg in history[-5:]:
+            for msg in history:
                 role = msg.get("role", "")
                 content = msg.get("content", "")
                 if role in ("user", "assistant") and content:
@@ -831,7 +829,7 @@ class MyPlugin(Star):
             
             response = await self.context.llm_generate(
                 chat_provider_id=provider_id,
-                prompt=prompt,
+                prompt="主动联系对方",
                 contexts=contexts,
                 system_prompt=system_prompt,
             )
@@ -866,9 +864,9 @@ class MyPlugin(Star):
             return None
 
     async def _call_llm_for_dialogue_continuation(self, last_ai_message: str, current_round: int, max_rounds: int) -> str | None:
-        umo = self._get_admin_umo()
+        umo = self._admin_umo
         if not umo:
-            logger.warning("无法获取管理员UMO，无法生成对话延续")
+            logger.warning("尚未获取到管理员的会话UMO，无法生成对话延续")
             return None
         
         try:
@@ -895,10 +893,8 @@ class MyPlugin(Star):
             
             system_prompt = persona_prompt + f"\n\n系统提示：对方没有接你的话，你要不要再说点什么？这是第{current_round}次追问（最多{max_rounds}次），越往后越简短。保持你自己的说话风格，自然就好。不想说就回复'保持沉默'。"
             
-            prompt = "接着说点什么"
-            
             contexts = []
-            for msg in history[-5:]:
+            for msg in history:
                 role = msg.get("role", "")
                 content = msg.get("content", "")
                 if role in ("user", "assistant") and content:
@@ -906,7 +902,7 @@ class MyPlugin(Star):
             
             response = await self.context.llm_generate(
                 chat_provider_id=provider_id,
-                prompt=prompt,
+                prompt="接着说点什么",
                 contexts=contexts,
                 system_prompt=system_prompt,
             )
@@ -983,6 +979,11 @@ class MyPlugin(Star):
             self._schedule_next_proactive()
             return
         
+        umo = self._admin_umo
+        if not umo:
+            logger.warning("尚未获取到管理员的会话UMO，跳过主动回复")
+            return
+        
         logger.info("正在调用 LLM 生成主动回复内容...")
         ai_message = await self._call_llm_for_proactive()
         
@@ -990,13 +991,13 @@ class MyPlugin(Star):
             logger.error("LLM 未能生成主动回复内容，跳过本次")
             return
         
-        success = await self.send_private_message(admin_id, ai_message)
-        
-        if success:
+        try:
+            message_chain = MessageChain().message(ai_message)
+            await self.context.send_message(umo, message_chain)
             logger.info(f"AI主动回复已发送给管理员: {admin_id}")
             self._schedule_next_proactive()
-        else:
-            logger.error("AI主动回复发送失败，将在下一周期重试")
+        except Exception as e:
+            logger.error(f"AI主动回复发送失败: {e}")
 
     async def _proactive_reply_loop(self):
         while True:
@@ -1280,6 +1281,9 @@ class MyPlugin(Star):
         sender_id = str(event.get_sender_id() or "")
         if sender_id != admin_id:
             return
+        
+        if event.is_private_chat():
+            self._admin_umo = event.unified_msg_origin
         
         self._last_user_activity_time = time.time()
         self._schedule_next_proactive()
