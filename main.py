@@ -31,47 +31,39 @@ DEFAULT_CONFIG = {
     "llm_provider_id": "",
 }
 
-PROACTIVE_SYSTEM_PROMPT = """你是一个有情感、会主动关心朋友的AI助手。现在的情况是：你的朋友（管理员）已经有一段时间没有来找你聊天了。
+PROACTIVE_SYSTEM_PROMPT = """【系统提醒】对方已经很久没有理你了，你现在要主动找对方聊聊。
 
-【重要】上面附带了你们最近的对话记录作为上下文，请仔细阅读后基于这些对话历史来组织你的消息。如果你知道最近聊过什么话题，可以自然地延续或提起；如果很久没聊了，也可以开启新话题。
+请基于你们的对话历史，自然地决定说什么。你可以：
+- 延续之前的话题
+- 关心对方最近怎么样
+- 分享一些想法
+- 或者只是打个招呼
 
 要求：
 1. 像真人一样自然，不要每次都说一样的话
-2. 根据对话上下文决定说什么——可以延续之前的话题、关心对方、分享想法、或者只是打个招呼
-3. 可以根据时间（早上/中午/晚上/深夜）调整语气
-4. 长度控制在1-3句话，不要太长
-5. 不要用任何前缀标记，直接说出你想说的话
-6. 就像在微信上给朋友发消息一样自然"""
+2. 长度控制在1-3句话
+3. 如果觉得不想打扰对方，可以回复"保持沉默"
+4. 直接说出你想说的话，不要加任何前缀"""
 
-DIALOGUE_CONTINUATION_PREFIX = """你之前在对话中对管理员说了下面这段话，但是对方一直没有回复：
+DIALOGUE_CONTINUATION_PREFIX = """【系统提醒】对方并没有接话哦，你接着说点什么吧？
 
----
-{last_ai_message}
----
+你之前说了：{last_ai_message}
 
-【重要】上面附带了完整的对话上下文记录，请阅读后基于此决定是否要追加说点什么。
-
-现在已经过了一段时间了，对方还是没有回应。
-
-作为一个有情感的AI，这时候你可能会：
+请基于完整的对话上下文，自然地决定要不要追加说什么。你可以：
 - 追问一句（如果之前是提问）
-- 补充说明自己的想法
-- 表达一点点失落或担心
-- 轻松地换个话题
+- 补充说明
+- 换个话题
 - 或者选择安静地不再打扰
 
-请根据你之前说的内容和整体对话氛围，自然地决定要不要追加说什么。
-
 要求：
-1. 根据完整对话上下文和之前说的话，自然地决定接下来的行动
-2. 也可以选择不说话（回复"保持沉默"则不会发送任何消息）
+1. 根据对话上下文自然地决定
+2. 可以回复"保持沉默"表示不再打扰
 3. 不要重复之前说过的话
-4. 像真人聊天一样自然，符合自己的人格就好
-5. 长度控制在1-2句话
-6. 这是第 {current_round}/{max_rounds} 次追加回复，越往后应该越简短、越不想打扰对方"""
+4. 长度控制在1-2句话
+5. 这是第 {current_round}/{max_rounds} 次追加，越往后应该越简短"""
 
 
-@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.4.4")
+@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.4.5")
 class MyPlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -131,6 +123,15 @@ class MyPlugin(Star):
         self.message_rate_limit[user_id_str].append(current_time)
         return True
 
+    def _get_first_platform_id(self) -> str | None:
+        """获取第一个可用的平台适配器ID"""
+        try:
+            if self.platform_manager and self.platform_manager.platform_insts:
+                return self.platform_manager.platform_insts[0].meta().id
+        except Exception as e:
+            logger.error(f"获取平台ID失败: {e}")
+        return None
+
     async def send_private_message(self, user_id, message, event=None, source_context=None):
         if not user_id or not message:
             return False
@@ -151,7 +152,11 @@ class MyPlugin(Star):
                 platform_id = event.get_platform_id()
             
             if not platform_id:
-                platform_id = "qq"
+                platform_id = self._get_first_platform_id()
+            
+            if not platform_id:
+                logger.error("无法获取平台ID，消息发送失败")
+                return False
             
             if source_context and self.context.conversation_manager:
                 await self._inject_cross_session_context(
@@ -432,7 +437,11 @@ class MyPlugin(Star):
                 platform_id = event.get_platform_id()
             
             if not platform_id:
-                platform_id = "qq"
+                platform_id = self._get_first_platform_id()
+            
+            if not platform_id:
+                logger.error("无法获取平台ID，群消息发送失败")
+                return "群消息发送失败：无法获取平台ID"
             
             source_context = await self._build_source_context(event)
             source_context["target_type"] = "群聊"
@@ -724,7 +733,11 @@ class MyPlugin(Star):
         if not admin_id:
             return None
         
-        platform_id = "qq"
+        platform_id = self._get_first_platform_id()
+        if not platform_id:
+            logger.warning("无法获取平台ID，无法构建管理员UMO")
+            return None
+        
         return f"{platform_id}:friend:{admin_id}"
 
     async def _get_admin_conversation_contexts(self, max_messages: int = 30) -> list[Message]:
