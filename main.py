@@ -32,7 +32,7 @@ DEFAULT_CONFIG = {
 }
 
 
-@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.6.1")
+@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.6.5")
 class MyPlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -831,10 +831,10 @@ class MyPlugin(Star):
             persona_prompt = await self._get_persona_prompt(umo, conv)
             
             already_reached_out = False
-            for msg in history[-3:]:
-                if msg.get("role") == "assistant":
+            if history:
+                last_msg = history[-1]
+                if last_msg.get("role") == "assistant":
                     already_reached_out = True
-                    break
             
             if already_reached_out:
                 system_prompt = persona_prompt + "\n\n系统提示：你之前主动联系了对方，但对方还是没有理你。你可以再试试，或者换个方式，也可以选择不再打扰。保持你自己的说话风格。"
@@ -972,9 +972,12 @@ class MyPlugin(Star):
         end_hour = int(config.get("proactive_reply_end_hour", 23))
         
         if start_hour <= end_hour:
-            return start_hour <= now < end_hour
+            result = start_hour <= now < end_hour
         else:
-            return now >= start_hour or now < end_hour
+            result = now >= start_hour or now < end_hour
+        
+        logger.debug(f"时间窗口检查: 当前{now}点, 窗口{start_hour}-{end_hour}, 结果={'活跃' if result else '不活跃'}")
+        return result
 
     def _get_next_proactive_interval(self):
         config = self._get_config()
