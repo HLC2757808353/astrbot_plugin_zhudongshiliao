@@ -31,7 +31,7 @@ DEFAULT_CONFIG = {
 }
 
 
-@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.4.7")
+@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.4.8")
 class MyPlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -770,13 +770,19 @@ class MyPlugin(Star):
             return "【系统提醒】对方已经很久没有理你了，快去主动找对方聊聊吧。"
 
     async def _call_llm_for_proactive(self) -> str | None:
-        provider_id = self._get_llm_provider_id()
-        if not provider_id:
-            return None
-        
         umo = self._get_admin_umo()
         if not umo:
             logger.warning("无法获取管理员UMO，无法生成主动回复")
+            return None
+        
+        try:
+            provider_id = await self.context.get_current_chat_provider_id(umo)
+        except Exception as e:
+            logger.warning(f"无法获取当前会话的聊天模型ID: {e}，尝试自动选择")
+            provider_id = self._get_llm_provider_id()
+        
+        if not provider_id:
+            logger.error("无法获取聊天模型ID，无法生成主动回复")
             return None
         
         try:
@@ -794,28 +800,17 @@ class MyPlugin(Star):
             
             time_prompt = self._get_time_based_prompt()
             
-            system_message = {
-                "role": "system",
-                "content": time_prompt,
-            }
-            history.append(system_message)
-            
-            trigger_message = {
-                "role": "user",
-                "content": "（系统触发：主动联系）",
-            }
-            history.append(trigger_message)
-            
             contexts = []
             for msg in history[-30:]:
                 role = msg.get("role", "")
                 content = msg.get("content", "")
-                if role in ("user", "assistant", "system") and content:
+                if role in ("user", "assistant") and content:
                     contexts.append({"role": role, "content": content})
             
             response = await self.context.llm_generate(
                 chat_provider_id=provider_id,
                 contexts=contexts,
+                system_prompt=time_prompt,
             )
             
             if response.completion_text:
@@ -848,13 +843,19 @@ class MyPlugin(Star):
             return None
 
     async def _call_llm_for_dialogue_continuation(self, last_ai_message: str, current_round: int, max_rounds: int) -> str | None:
-        provider_id = self._get_llm_provider_id()
-        if not provider_id:
-            return None
-        
         umo = self._get_admin_umo()
         if not umo:
             logger.warning("无法获取管理员UMO，无法生成对话延续")
+            return None
+        
+        try:
+            provider_id = await self.context.get_current_chat_provider_id(umo)
+        except Exception as e:
+            logger.warning(f"无法获取当前会话的聊天模型ID: {e}，尝试自动选择")
+            provider_id = self._get_llm_provider_id()
+        
+        if not provider_id:
+            logger.error("无法获取聊天模型ID，无法生成对话延续")
             return None
         
         try:
@@ -869,28 +870,17 @@ class MyPlugin(Star):
             
             system_prompt = f"【系统提醒】对方并没有接话哦，你接着说点什么吧？这是第 {current_round}/{max_rounds} 次追问，越往后应该越简短自然。"
             
-            system_message = {
-                "role": "system",
-                "content": system_prompt,
-            }
-            history.append(system_message)
-            
-            trigger_message = {
-                "role": "user",
-                "content": "（系统触发：对方没有回复）",
-            }
-            history.append(trigger_message)
-            
             contexts = []
             for msg in history[-30:]:
                 role = msg.get("role", "")
                 content = msg.get("content", "")
-                if role in ("user", "assistant", "system") and content:
+                if role in ("user", "assistant") and content:
                     contexts.append({"role": role, "content": content})
             
             response = await self.context.llm_generate(
                 chat_provider_id=provider_id,
                 contexts=contexts,
+                system_prompt=system_prompt,
             )
             
             if response.completion_text:
