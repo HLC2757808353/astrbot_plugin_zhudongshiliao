@@ -94,13 +94,5 @@
     "hint": "单次对话中最多连续延续几次。达到上限后停止，防止无限延续造成骚扰和API浪费。每轮都会消耗一次LLM调用且AI可选择保持沉默。默认3轮",
     "editable": true,
     "display_name": "对话延续最大轮次"
-  },
-  "llm_provider_id": {
-    "description": "用于生成主动回复和对话延续内容的LLM模型Provider ID（留空自动检测）",
-    "type": "string",
-    "default": "",
-    "hint": "指定使用哪个LLM模型来生成主动回复和对话延续内容。留空则自动选择第一个可用的模型。可在AstrBot的模型设置中查看Provider ID",
-    "editable": true,
-    "display_name": "LLM模型ID"
   }
 }

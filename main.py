@@ -31,7 +31,7 @@ DEFAULT_CONFIG = {
 }
 
 
-@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.4.9")
+@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.5.3")
 class MyPlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -757,17 +757,17 @@ class MyPlugin(Star):
         hour = now.hour
         
         if 11 <= hour < 14:
-            return "【系统提醒】对方已经很久没有理你了，快去主动找对方聊聊吧。现在是中午时间，可以问问午饭吃了没、要不要午睡之类的。"
+            return "现在是中午时间，可以问问午饭吃了没、要不要午睡之类的。"
         elif 17 <= hour < 20:
-            return "【系统提醒】对方已经很久没有理你了，快去主动找对方聊聊吧。现在是傍晚时间，可以问问晚饭吃了没、今天过得怎么样之类的。"
+            return "现在是傍晚时间，可以问问晚饭吃了没、今天过得怎么样之类的。"
         elif 22 <= hour < 24:
-            return "【系统提醒】对方已经很久没有理你了，快去主动找对方聊聊吧。现在很晚了，可以关心一下是不是还在熬夜、该去睡觉啦之类的。"
+            return "现在很晚了，可以关心一下是不是还在熬夜、该去睡觉啦之类的。"
         elif 0 <= hour < 6:
-            return "【系统提醒】对方已经很久没有理你了，快去主动找对方聊聊吧。现在是大半夜，可以关心一下怎么还没睡、是不是失眠了之类的。"
+            return "现在是大半夜，可以关心一下怎么还没睡、是不是失眠了之类的。"
         elif 6 <= hour < 9:
-            return "【系统提醒】对方已经很久没有理你了，快去主动找对方聊聊吧。现在是早上，可以问问起床了没、吃早饭没之类的。"
+            return "现在是早上，可以问问起床了没、吃早饭没之类的。"
         else:
-            return "【系统提醒】对方已经很久没有理你了，快去主动找对方聊聊吧。"
+            return ""
 
     async def _call_llm_for_proactive(self) -> str | None:
         umo = self._get_admin_umo()
@@ -798,10 +798,16 @@ class MyPlugin(Star):
             if conv and conv.history:
                 history = json.loads(conv.history)
             
+            from datetime import datetime
+            now = datetime.now()
+            time_info = f"当前时间是 {now.strftime('%Y年%m月%d日 %H:%M')}，是{'上午' if now.hour < 12 else '下午' if now.hour < 18 else '晚上'}。"
+            
             time_prompt = self._get_time_based_prompt()
             
+            prompt = f"{time_info}\n\n对方已经很久没有理你了，快去主动找对方聊聊吧。{time_prompt}\n\n请基于你们之前的对话历史，自然地决定说什么。保持你的人格和语气，像平时聊天一样自然。"
+            
             contexts = []
-            for msg in history[-30:]:
+            for msg in history[-5:]:
                 role = msg.get("role", "")
                 content = msg.get("content", "")
                 if role in ("user", "assistant") and content:
@@ -809,8 +815,8 @@ class MyPlugin(Star):
             
             response = await self.context.llm_generate(
                 chat_provider_id=provider_id,
+                prompt=prompt,
                 contexts=contexts,
-                system_prompt=time_prompt,
             )
             
             if response.completion_text:
@@ -868,10 +874,14 @@ class MyPlugin(Star):
             if conv and conv.history:
                 history = json.loads(conv.history)
             
-            system_prompt = f"【系统提醒】对方并没有接话哦，你接着说点什么吧？这是第 {current_round}/{max_rounds} 次追问，越往后应该越简短自然。"
+            from datetime import datetime
+            now = datetime.now()
+            time_info = f"当前时间是 {now.strftime('%Y年%m月%d日 %H:%M')}。"
+            
+            prompt = f"{time_info}\n\n对方并没有接话哦，你接着说点什么吧？这是第 {current_round}/{max_rounds} 次追问，越往后应该越简短自然。\n\n请基于你们之前的对话历史，自然地决定要不要追加说什么。保持你的人格和语气，像平时聊天一样自然。"
             
             contexts = []
-            for msg in history[-30:]:
+            for msg in history[-5:]:
                 role = msg.get("role", "")
                 content = msg.get("content", "")
                 if role in ("user", "assistant") and content:
@@ -879,8 +889,8 @@ class MyPlugin(Star):
             
             response = await self.context.llm_generate(
                 chat_provider_id=provider_id,
+                prompt=prompt,
                 contexts=contexts,
-                system_prompt=system_prompt,
             )
             
             if response.completion_text:
