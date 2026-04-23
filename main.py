@@ -12,6 +12,7 @@ import asyncio
 import time
 import re
 import json
+import os
 import random
 from collections import defaultdict
 
@@ -31,7 +32,7 @@ DEFAULT_CONFIG = {
 }
 
 
-@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.6.0")
+@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.6.1")
 class MyPlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -51,6 +52,26 @@ class MyPlugin(Star):
         self._lock = asyncio.Lock()
         
         self._admin_umo = None
+        self._umo_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_admin_umo.json")
+        self._load_admin_umo()
+
+    def _load_admin_umo(self):
+        try:
+            if os.path.exists(self._umo_file):
+                with open(self._umo_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    self._admin_umo = data.get("umo")
+                    if self._admin_umo:
+                        logger.info(f"已加载管理员UMO: {self._admin_umo}")
+        except Exception as e:
+            logger.debug(f"加载管理员UMO失败: {e}")
+    
+    def _save_admin_umo(self):
+        try:
+            with open(self._umo_file, "w", encoding="utf-8") as f:
+                json.dump({"umo": self._admin_umo}, f)
+        except Exception as e:
+            logger.debug(f"保存管理员UMO失败: {e}")
 
     def _cleanup_rate_limit(self):
         current_time = time.time()
@@ -1284,6 +1305,7 @@ class MyPlugin(Star):
         
         if event.is_private_chat():
             self._admin_umo = event.unified_msg_origin
+            self._save_admin_umo()
         
         self._last_user_activity_time = time.time()
         self._schedule_next_proactive()
