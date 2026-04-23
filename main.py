@@ -31,7 +31,7 @@ DEFAULT_CONFIG = {
 }
 
 
-@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.5.4")
+@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.5.9")
 class MyPlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -750,25 +750,6 @@ class MyPlugin(Star):
         logger.error("没有找到可用的 LLM Provider，无法生成AI回复")
         return None
 
-    def _get_time_based_prompt(self) -> str:
-        """根据当前时间段生成有人情味的提示"""
-        from datetime import datetime
-        now = datetime.now()
-        hour = now.hour
-        
-        if 11 <= hour < 14:
-            return "现在是中午时间，可以问问午饭吃了没、要不要午睡之类的。"
-        elif 17 <= hour < 20:
-            return "现在是傍晚时间，可以问问晚饭吃了没、今天过得怎么样之类的。"
-        elif 22 <= hour < 24:
-            return "现在很晚了，可以关心一下是不是还在熬夜、该去睡觉啦之类的。"
-        elif 0 <= hour < 6:
-            return "现在是大半夜，可以关心一下怎么还没睡、是不是失眠了之类的。"
-        elif 6 <= hour < 9:
-            return "现在是早上，可以问问起床了没、吃早饭没之类的。"
-        else:
-            return ""
-
     async def _get_persona_prompt(self, umo: str, conv) -> str:
         """获取当前会话的人格设定"""
         try:
@@ -826,15 +807,18 @@ class MyPlugin(Star):
             if conv and conv.history:
                 history = json.loads(conv.history)
             
-            from datetime import datetime
-            now = datetime.now()
-            time_info = f"当前时间是 {now.strftime('%Y年%m月%d日 %H:%M')}，是{'上午' if now.hour < 12 else '下午' if now.hour < 18 else '晚上'}。"
-            
-            time_prompt = self._get_time_based_prompt()
-            
             persona_prompt = await self._get_persona_prompt(umo, conv)
             
-            system_prompt = persona_prompt + "\n\n" + time_info + "\n\n对方已经很久没有理你了，快去主动找对方聊聊吧。" + time_prompt + "\n\n请基于你们之前的对话历史，自然地决定说什么。保持你的人格和语气，像平时聊天一样自然。"
+            already_reached_out = False
+            for msg in history[-3:]:
+                if msg.get("role") == "assistant":
+                    already_reached_out = True
+                    break
+            
+            if already_reached_out:
+                system_prompt = persona_prompt + "\n\n系统提示：你之前主动联系了对方，但对方还是没有理你。你可以再试试，或者换个方式，也可以选择不再打扰。保持你自己的说话风格。"
+            else:
+                system_prompt = persona_prompt + "\n\n系统提示：对方已经很久没有搭理你了，你现在要主动去找一下对方。保持你自己的说话风格，自然地发一条消息就行。"
             
             prompt = "主动联系对方"
             
@@ -907,13 +891,9 @@ class MyPlugin(Star):
             if conv and conv.history:
                 history = json.loads(conv.history)
             
-            from datetime import datetime
-            now = datetime.now()
-            time_info = f"当前时间是 {now.strftime('%Y年%m月%d日 %H:%M')}。"
-            
             persona_prompt = await self._get_persona_prompt(umo, conv)
             
-            system_prompt = persona_prompt + "\n\n" + time_info + "\n\n对方并没有接话哦，你接着说点什么吧？这是第 " + str(current_round) + "/" + str(max_rounds) + " 次追问，越往后应该越简短自然。\n\n请基于你们之前的对话历史，自然地决定要不要追加说什么。保持你的人格和语气，像平时聊天一样自然。"
+            system_prompt = persona_prompt + f"\n\n系统提示：对方没有接你的话，你要不要再说点什么？这是第{current_round}次追问（最多{max_rounds}次），越往后越简短。保持你自己的说话风格，自然就好。不想说就回复'保持沉默'。"
             
             prompt = "接着说点什么"
             
@@ -996,6 +976,11 @@ class MyPlugin(Star):
         
         if not admin_id:
             logger.warning("主动回复跳过：管理员ID未配置")
+            return
+        
+        if not self._is_in_active_time_window():
+            logger.info("当前不在活跃时间窗口内，跳过本次主动回复")
+            self._schedule_next_proactive()
             return
         
         logger.info("正在调用 LLM 生成主动回复内容...")
