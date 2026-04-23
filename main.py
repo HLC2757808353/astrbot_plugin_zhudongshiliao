@@ -71,7 +71,7 @@ DIALOGUE_CONTINUATION_PREFIX = """你之前在对话中对管理员说了下面�
 6. 这是第 {current_round}/{max_rounds} 次追加回复，越往后应该越简短、越不想打扰对方"""
 
 
-@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.4.3")
+@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.4.4")
 class MyPlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -772,7 +772,7 @@ class MyPlugin(Star):
         providers = self.context.get_all_providers()
         if providers:
             chosen = providers[0]
-            logger.info(f"自动选择 LLM Provider: {chosen.meta().id} ({chosen.meta().model_name})")
+            logger.info(f"自动选择 LLM Provider: {chosen.meta().id} ({chosen.meta().model})")
             return chosen.meta().id
         
         logger.error("没有找到可用的 LLM Provider，无法生成AI回复")
