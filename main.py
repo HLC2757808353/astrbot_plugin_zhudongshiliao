@@ -32,7 +32,7 @@ DEFAULT_CONFIG = {
 }
 
 
-@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.6.5")
+@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.6.7")
 class MyPlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -52,7 +52,8 @@ class MyPlugin(Star):
         self._lock = asyncio.Lock()
         
         self._admin_umo = None
-        self._umo_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_admin_umo.json")
+        self._umo_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "_admin_umo.json")
+        os.makedirs(os.path.dirname(self._umo_file), exist_ok=True)
         self._load_admin_umo()
 
     def _load_admin_umo(self):
@@ -837,9 +838,9 @@ class MyPlugin(Star):
                     already_reached_out = True
             
             if already_reached_out:
-                system_prompt = persona_prompt + "\n\n系统提示：你之前主动联系了对方，但对方还是没有理你。你可以再试试，或者换个方式，也可以选择不再打扰。保持你自己的说话风格。"
+                system_prompt = persona_prompt + "\n\n系统提示：对方还是没有理你，你要不要再发条消息？不想发就不发。"
             else:
-                system_prompt = persona_prompt + "\n\n系统提示：对方已经很久没有搭理你了，你现在要主动去找一下对方。保持你自己的说话风格，自然地发一条消息就行。"
+                system_prompt = persona_prompt + "\n\n系统提示：对方很长时间没有找你了，给对方发条消息吧。"
             
             contexts = []
             for msg in history:
@@ -912,7 +913,7 @@ class MyPlugin(Star):
             
             persona_prompt = await self._get_persona_prompt(umo, conv)
             
-            system_prompt = persona_prompt + f"\n\n系统提示：对方没有接你的话，你要不要再说点什么？这是第{current_round}次追问（最多{max_rounds}次），越往后越简短。保持你自己的说话风格，自然就好。不想说就回复'保持沉默'。"
+            system_prompt = persona_prompt + f"\n\n系统提示：对方没有接你的话，你要不要再说点什么？这是第{current_round}次追问（最多{max_rounds}次），越往后越简短。不想说就回复'保持沉默'。"
             
             contexts = []
             for msg in history:
@@ -966,17 +967,18 @@ class MyPlugin(Star):
 
     def _is_in_active_time_window(self):
         from datetime import datetime
-        now = datetime.now().hour
+        now = datetime.now()
+        current_hour = now.hour
         config = self._get_config()
         start_hour = int(config.get("proactive_reply_start_hour", 9))
         end_hour = int(config.get("proactive_reply_end_hour", 23))
         
         if start_hour <= end_hour:
-            result = start_hour <= now < end_hour
+            result = start_hour <= current_hour < end_hour
         else:
-            result = now >= start_hour or now < end_hour
+            result = current_hour >= start_hour or current_hour < end_hour
         
-        logger.debug(f"时间窗口检查: 当前{now}点, 窗口{start_hour}-{end_hour}, 结果={'活跃' if result else '不活跃'}")
+        logger.info(f"时间窗口检查: 当前{current_hour}点, 窗口{start_hour}-{end_hour}, 结果={'活跃' if result else '不活跃'}")
         return result
 
     def _get_next_proactive_interval(self):
