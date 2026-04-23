@@ -31,7 +31,7 @@ DEFAULT_CONFIG = {
 }
 
 
-@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.4.8")
+@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.4.9")
 class MyPlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -805,7 +805,7 @@ class MyPlugin(Star):
                 role = msg.get("role", "")
                 content = msg.get("content", "")
                 if role in ("user", "assistant") and content:
-                    contexts.append({"role": role, "content": content})
+                    contexts.append(Message(role=role, content=content))
             
             response = await self.context.llm_generate(
                 chat_provider_id=provider_id,
@@ -875,7 +875,7 @@ class MyPlugin(Star):
                 role = msg.get("role", "")
                 content = msg.get("content", "")
                 if role in ("user", "assistant") and content:
-                    contexts.append({"role": role, "content": content})
+                    contexts.append(Message(role=role, content=content))
             
             response = await self.context.llm_generate(
                 chat_provider_id=provider_id,
