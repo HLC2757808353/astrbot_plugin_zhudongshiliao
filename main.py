@@ -30,39 +30,8 @@ DEFAULT_CONFIG = {
     "immersive_followup_max_rounds": 3,
 }
 
-PROACTIVE_SYSTEM_PROMPT = """【系统提醒】对方已经很久没有理你了，你现在要主动找对方聊聊。
 
-请基于你们的对话历史，自然地决定说什么。你可以：
-- 延续之前的话题
-- 关心对方最近怎么样
-- 分享一些想法
-- 或者只是打个招呼
-
-要求：
-1. 像真人一样自然，不要每次都说一样的话
-2. 长度控制在1-3句话
-3. 如果觉得不想打扰对方，可以回复"保持沉默"
-4. 直接说出你想说的话，不要加任何前缀"""
-
-DIALOGUE_CONTINUATION_PREFIX = """【系统提醒】对方并没有接话哦，你接着说点什么吧？
-
-你之前说了：{last_ai_message}
-
-请基于完整的对话上下文，自然地决定要不要追加说什么。你可以：
-- 追问一句（如果之前是提问）
-- 补充说明
-- 换个话题
-- 或者选择安静地不再打扰
-
-要求：
-1. 根据对话上下文自然地决定
-2. 可以回复"保持沉默"表示不再打扰
-3. 不要重复之前说过的话
-4. 长度控制在1-2句话
-5. 这是第 {current_round}/{max_rounds} 次追加，越往后应该越简短"""
-
-
-@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.4.6")
+@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.4.7")
 class MyPlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -781,27 +750,73 @@ class MyPlugin(Star):
         logger.error("没有找到可用的 LLM Provider，无法生成AI回复")
         return None
 
+    def _get_time_based_prompt(self) -> str:
+        """根据当前时间段生成有人情味的提示"""
+        from datetime import datetime
+        now = datetime.now()
+        hour = now.hour
+        
+        if 11 <= hour < 14:
+            return "【系统提醒】对方已经很久没有理你了，快去主动找对方聊聊吧。现在是中午时间，可以问问午饭吃了没、要不要午睡之类的。"
+        elif 17 <= hour < 20:
+            return "【系统提醒】对方已经很久没有理你了，快去主动找对方聊聊吧。现在是傍晚时间，可以问问晚饭吃了没、今天过得怎么样之类的。"
+        elif 22 <= hour < 24:
+            return "【系统提醒】对方已经很久没有理你了，快去主动找对方聊聊吧。现在很晚了，可以关心一下是不是还在熬夜、该去睡觉啦之类的。"
+        elif 0 <= hour < 6:
+            return "【系统提醒】对方已经很久没有理你了，快去主动找对方聊聊吧。现在是大半夜，可以关心一下怎么还没睡、是不是失眠了之类的。"
+        elif 6 <= hour < 9:
+            return "【系统提醒】对方已经很久没有理你了，快去主动找对方聊聊吧。现在是早上，可以问问起床了没、吃早饭没之类的。"
+        else:
+            return "【系统提醒】对方已经很久没有理你了，快去主动找对方聊聊吧。"
+
     async def _call_llm_for_proactive(self) -> str | None:
         provider_id = self._get_llm_provider_id()
         if not provider_id:
             return None
         
-        from datetime import datetime
-        now = datetime.now()
-        time_context = f"当前时间是 {now.strftime('%Y年%m月%d日 %H:%M')}，是{'上午' if now.hour < 12 else '下午' if now.hour < 18 else '晚上'}。"
-        
-        contexts = await self._get_admin_conversation_contexts(max_messages=20)
+        umo = self._get_admin_umo()
+        if not umo:
+            logger.warning("无法获取管理员UMO，无法生成主动回复")
+            return None
         
         try:
-            kwargs = {
-                "chat_provider_id": provider_id,
-                "prompt": f"{time_context}\n\n请基于上面的对话上下文，生成一条想要主动联系管理员的私信内容。",
-                "system_prompt": PROACTIVE_SYSTEM_PROMPT,
-            }
-            if contexts:
-                kwargs["contexts"] = contexts
+            conv_id = await self.context.conversation_manager.get_curr_conversation_id(umo)
+            if not conv_id:
+                conv_id = await self.context.conversation_manager.new_conversation(
+                    unified_msg_origin=umo,
+                    platform_id=self._get_first_platform_id() or "default",
+                )
             
-            response = await self.context.llm_generate(**kwargs)
+            conv = await self.context.conversation_manager.get_conversation(umo, conv_id)
+            history = []
+            if conv and conv.history:
+                history = json.loads(conv.history)
+            
+            time_prompt = self._get_time_based_prompt()
+            
+            system_message = {
+                "role": "system",
+                "content": time_prompt,
+            }
+            history.append(system_message)
+            
+            trigger_message = {
+                "role": "user",
+                "content": "（系统触发：主动联系）",
+            }
+            history.append(trigger_message)
+            
+            contexts = []
+            for msg in history[-30:]:
+                role = msg.get("role", "")
+                content = msg.get("content", "")
+                if role in ("user", "assistant", "system") and content:
+                    contexts.append({"role": role, "content": content})
+            
+            response = await self.context.llm_generate(
+                chat_provider_id=provider_id,
+                contexts=contexts,
+            )
             
             if response.completion_text:
                 text = response.completion_text.strip()
@@ -811,6 +826,17 @@ class MyPlugin(Star):
                     logger.info("AI选择保持沉默，本次不发送主动回复")
                     return None
                 
+                history.append({
+                    "role": "assistant",
+                    "content": text,
+                })
+                
+                await self.context.conversation_manager.update_conversation(
+                    unified_msg_origin=umo,
+                    conversation_id=conv_id,
+                    history=history,
+                )
+                
                 logger.info(f"LLM 生成主动回复成功（含{len(contexts)}条上下文），长度: {len(text)}")
                 return text
             else:
@@ -818,6 +844,7 @@ class MyPlugin(Star):
                 return None
         except Exception as e:
             logger.error(f"调用 LLM 生成主动回复失败: {e}")
+            logger.exception("调用 LLM 生成主动回复失败详情")
             return None
 
     async def _call_llm_for_dialogue_continuation(self, last_ai_message: str, current_round: int, max_rounds: int) -> str | None:
@@ -825,24 +852,46 @@ class MyPlugin(Star):
         if not provider_id:
             return None
         
-        system_prompt = DIALOGUE_CONTINUATION_PREFIX.format(
-            last_ai_message=last_ai_message,
-            current_round=current_round,
-            max_rounds=max_rounds,
-        )
-        
-        contexts = await self._get_admin_conversation_contexts(max_messages=30)
+        umo = self._get_admin_umo()
+        if not umo:
+            logger.warning("无法获取管理员UMO，无法生成对话延续")
+            return None
         
         try:
-            kwargs = {
-                "chat_provider_id": provider_id,
-                "prompt": "请根据上面的完整对话上下文和你之前说的话，决定是否要追加说点什么。如果觉得不需要再说，请回复'保持沉默'。",
-                "system_prompt": system_prompt,
-            }
-            if contexts:
-                kwargs["contexts"] = contexts
+            conv_id = await self.context.conversation_manager.get_curr_conversation_id(umo)
+            if not conv_id:
+                return None
             
-            response = await self.context.llm_generate(**kwargs)
+            conv = await self.context.conversation_manager.get_conversation(umo, conv_id)
+            history = []
+            if conv and conv.history:
+                history = json.loads(conv.history)
+            
+            system_prompt = f"【系统提醒】对方并没有接话哦，你接着说点什么吧？这是第 {current_round}/{max_rounds} 次追问，越往后应该越简短自然。"
+            
+            system_message = {
+                "role": "system",
+                "content": system_prompt,
+            }
+            history.append(system_message)
+            
+            trigger_message = {
+                "role": "user",
+                "content": "（系统触发：对方没有回复）",
+            }
+            history.append(trigger_message)
+            
+            contexts = []
+            for msg in history[-30:]:
+                role = msg.get("role", "")
+                content = msg.get("content", "")
+                if role in ("user", "assistant", "system") and content:
+                    contexts.append({"role": role, "content": content})
+            
+            response = await self.context.llm_generate(
+                chat_provider_id=provider_id,
+                contexts=contexts,
+            )
             
             if response.completion_text:
                 text = response.completion_text.strip()
@@ -852,6 +901,17 @@ class MyPlugin(Star):
                     logger.info(f"对话延续 [{current_round}/{max_rounds}]: AI选择保持沉默")
                     return None
                 
+                history.append({
+                    "role": "assistant",
+                    "content": text,
+                })
+                
+                await self.context.conversation_manager.update_conversation(
+                    unified_msg_origin=umo,
+                    conversation_id=conv_id,
+                    history=history,
+                )
+                
                 logger.info(f"LLM 生成对话延续 [{current_round}/{max_rounds}] 成功（含{len(contexts)}条上下文），长度: {len(text)}")
                 return text
             else:
@@ -859,6 +919,7 @@ class MyPlugin(Star):
                 return None
         except Exception as e:
             logger.error(f"调用 LLM 生成对话延续失败: {e}")
+            logger.exception("调用 LLM 生成对话延续失败详情")
             return None
 
     # ==================== 主动回复模块 ====================
