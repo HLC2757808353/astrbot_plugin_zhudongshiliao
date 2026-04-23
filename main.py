@@ -71,7 +71,7 @@ DIALOGUE_CONTINUATION_PREFIX = """你之前在对话中对管理员说了下面�
 6. 这是第 {current_round}/{max_rounds} 次追加回复，越往后应该越简短、越不想打扰对方"""
 
 
-@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.4.2")
+@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.4.3")
 class MyPlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -211,25 +211,35 @@ class MyPlugin(Star):
             
             context_parts = []
             if recent_messages:
-                for msg in recent_messages[-5:]:
+                for msg in recent_messages[-10:]:
                     role = "用户" if msg.get("role") == "user" else "AI"
-                    content = msg.get("content", "")[:100]
+                    content = msg.get("content", "")[:500]
                     if content:
                         context_parts.append(f"{role}: {content}")
             
             recent_context = "\n".join(context_parts) if context_parts else "（无最近对话）"
             
-            system_content = f"""【跨会话消息上下文】
-来源: {source_type}「{source_name}」
-发送者: {sender_name}
-发送的消息: {message_content}
+            system_content = f"""【跨会话消息通知 - 重要上下文】
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📍 消息来源: {source_type}「{source_name}」
+👤 发送者: {sender_name}
+💬 发送的消息内容:
+{message_content}
 
-最近对话记录:
+📜 来源会话的最近对话记录（共{len(context_parts)}条）:
 {recent_context}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
----
-以上是来自「{source_name}」的上下文信息。用户 {sender_name} 让你发送消息给当前会话的用户。
-请记住这个上下文，如果对方问起"谁让你发的"或"为什么发这个"，你可以据此回答。"""
+【重要说明】
+上面的消息是由「{sender_name}」在「{source_name}」中让你发送给当前用户的。
+这是真实的对话上下文，请记住这些内容。
+
+如果当前用户问起：
+- "谁让你发的？" → 告诉他是「{sender_name}」让你发的
+- "为什么发这个？" → 根据上面的对话记录解释原因
+- "发生什么事了？" → 根据来源会话的上下文回答
+
+请像真正参与了那边的对话一样，自然地回应当前用户。"""
 
             system_message = {
                 "role": "system",
@@ -238,13 +248,21 @@ class MyPlugin(Star):
             
             history.append(system_message)
             
+            if recent_messages:
+                for msg in recent_messages[-6:]:
+                    if msg.get("role") in ("user", "assistant"):
+                        history.append({
+                            "role": msg["role"],
+                            "content": msg.get("content", ""),
+                        })
+            
             await self.context.conversation_manager.update_conversation(
                 unified_msg_origin=target_umo,
                 conversation_id=conv_id,
                 history=history,
             )
             
-            logger.info(f"已向目标会话 {target_umo} 注入跨会话上下文")
+            logger.info(f"已向目标会话 {target_umo} 注入跨会话上下文（含{len(context_parts)}条对话记录）")
             
         except Exception as e:
             logger.error(f"注入跨会话上下文失败: {e}")
@@ -482,25 +500,35 @@ class MyPlugin(Star):
             
             context_parts = []
             if recent_messages:
-                for msg in recent_messages[-5:]:
+                for msg in recent_messages[-10:]:
                     role = "用户" if msg.get("role") == "user" else "AI"
-                    content = msg.get("content", "")[:100]
+                    content = msg.get("content", "")[:500]
                     if content:
                         context_parts.append(f"{role}: {content}")
             
             recent_context = "\n".join(context_parts) if context_parts else "（无最近对话）"
             
-            system_content = f"""【跨会话消息上下文】
-来源: {source_type}「{source_name}」
-发送者: {sender_name}
-发送的消息: {message_content}
+            system_content = f"""【跨会话消息通知 - 重要上下文】
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📍 消息来源: {source_type}「{source_name}」
+👤 发送者: {sender_name}
+💬 发送的消息内容:
+{message_content}
 
-最近对话记录:
+📜 来源会话的最近对话记录（共{len(context_parts)}条）:
 {recent_context}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
----
-以上是来自「{source_name}」的上下文信息。用户 {sender_name} 让你发送消息到当前群聊。
-请记住这个上下文，如果有人问起"谁让你发的"或"为什么发这个"，你可以据此回答。"""
+【重要说明】
+上面的消息是由「{sender_name}」在「{source_name}」中让你发送到当前群聊的。
+这是真实的对话上下文，请记住这些内容。
+
+如果群里有人问起：
+- "谁让你发的？" → 告诉他是「{sender_name}」让你发的
+- "为什么发这个？" → 根据上面的对话记录解释原因
+- "发生什么事了？" → 根据来源会话的上下文回答
+
+请像真正参与了那边的对话一样，自然地回应群里的成员。"""
 
             system_message = {
                 "role": "system",
@@ -509,13 +537,21 @@ class MyPlugin(Star):
             
             history.append(system_message)
             
+            if recent_messages:
+                for msg in recent_messages[-6:]:
+                    if msg.get("role") in ("user", "assistant"):
+                        history.append({
+                            "role": msg["role"],
+                            "content": msg.get("content", ""),
+                        })
+            
             await self.context.conversation_manager.update_conversation(
                 unified_msg_origin=target_umo,
                 conversation_id=conv_id,
                 history=history,
             )
             
-            logger.info(f"已向目标群会话 {target_umo} 注入跨会话上下文")
+            logger.info(f"已向目标群会话 {target_umo} 注入跨会话上下文（含{len(context_parts)}条对话记录）")
             
         except Exception as e:
             logger.error(f"注入群会话跨会话上下文失败: {e}")
