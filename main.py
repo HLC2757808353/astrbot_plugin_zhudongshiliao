@@ -31,7 +31,7 @@ DEFAULT_CONFIG = {
 }
 
 
-@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.5.3")
+@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.5.4")
 class MyPlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -769,6 +769,34 @@ class MyPlugin(Star):
         else:
             return ""
 
+    async def _get_persona_prompt(self, umo: str, conv) -> str:
+        """获取当前会话的人格设定"""
+        try:
+            persona_id = None
+            if conv and hasattr(conv, 'persona_id') and conv.persona_id:
+                persona_id = conv.persona_id
+            
+            platform_id = self._get_first_platform_id() or "default"
+            _, persona, _, _ = await self.context.persona_manager.resolve_selected_persona(
+                umo=umo,
+                conversation_persona_id=persona_id,
+                platform_name=platform_id,
+            )
+            
+            if persona and persona.get("prompt"):
+                return persona["prompt"]
+        except Exception as e:
+            logger.debug(f"获取人格设定失败: {e}")
+        
+        try:
+            default_persona = await self.context.persona_manager.get_default_persona_v3(umo)
+            if default_persona and default_persona.get("prompt"):
+                return default_persona["prompt"]
+        except Exception as e:
+            logger.debug(f"获取默认人格设定失败: {e}")
+        
+        return ""
+
     async def _call_llm_for_proactive(self) -> str | None:
         umo = self._get_admin_umo()
         if not umo:
@@ -804,7 +832,11 @@ class MyPlugin(Star):
             
             time_prompt = self._get_time_based_prompt()
             
-            prompt = f"{time_info}\n\n对方已经很久没有理你了，快去主动找对方聊聊吧。{time_prompt}\n\n请基于你们之前的对话历史，自然地决定说什么。保持你的人格和语气，像平时聊天一样自然。"
+            persona_prompt = await self._get_persona_prompt(umo, conv)
+            
+            system_prompt = persona_prompt + "\n\n" + time_info + "\n\n对方已经很久没有理你了，快去主动找对方聊聊吧。" + time_prompt + "\n\n请基于你们之前的对话历史，自然地决定说什么。保持你的人格和语气，像平时聊天一样自然。"
+            
+            prompt = "主动联系对方"
             
             contexts = []
             for msg in history[-5:]:
@@ -817,6 +849,7 @@ class MyPlugin(Star):
                 chat_provider_id=provider_id,
                 prompt=prompt,
                 contexts=contexts,
+                system_prompt=system_prompt,
             )
             
             if response.completion_text:
@@ -878,7 +911,11 @@ class MyPlugin(Star):
             now = datetime.now()
             time_info = f"当前时间是 {now.strftime('%Y年%m月%d日 %H:%M')}。"
             
-            prompt = f"{time_info}\n\n对方并没有接话哦，你接着说点什么吧？这是第 {current_round}/{max_rounds} 次追问，越往后应该越简短自然。\n\n请基于你们之前的对话历史，自然地决定要不要追加说什么。保持你的人格和语气，像平时聊天一样自然。"
+            persona_prompt = await self._get_persona_prompt(umo, conv)
+            
+            system_prompt = persona_prompt + "\n\n" + time_info + "\n\n对方并没有接话哦，你接着说点什么吧？这是第 " + str(current_round) + "/" + str(max_rounds) + " 次追问，越往后应该越简短自然。\n\n请基于你们之前的对话历史，自然地决定要不要追加说什么。保持你的人格和语气，像平时聊天一样自然。"
+            
+            prompt = "接着说点什么"
             
             contexts = []
             for msg in history[-5:]:
@@ -891,6 +928,7 @@ class MyPlugin(Star):
                 chat_provider_id=provider_id,
                 prompt=prompt,
                 contexts=contexts,
+                system_prompt=system_prompt,
             )
             
             if response.completion_text:
@@ -1242,6 +1280,36 @@ class MyPlugin(Star):
             yield event.plain_result(help_text)
 
     # ==================== 用户活动监听 ====================
+
+    @filter.on_decorating_result()
+    async def on_user_message_reset_proactive(self, event: AstrMessageEvent):
+        """用户发消息时重置主动回复倒计时"""
+        config = self._get_config()
+        if not config.get("proactive_reply_enabled", False):
+            return
+        
+        admin_id = config.get("admin_id", "")
+        if not admin_id:
+            return
+        
+        sender_id = str(event.get_sender_id() or "")
+        if sender_id != admin_id:
+            return
+        
+        self._last_user_activity_time = time.time()
+        self._schedule_next_proactive()
+        
+        state_key = f"{admin_id}_followup"
+        if state_key in self._followup_state:
+            state = self._followup_state[state_key]
+            if state.get("timer_task") and not state["timer_task"].done():
+                state["timer_task"].cancel()
+                try:
+                    state["timer_task"].result()
+                except Exception:
+                    pass
+            self._followup_state[state_key]["round"] = 0
+            logger.debug("管理员发消息，主动回复倒计时已重置，对话延续计时器已重置")
 
     @filter.on_using_llm_tool()
     async def on_using_llm_tool(self, event: AstrMessageEvent, tool, tool_args):
