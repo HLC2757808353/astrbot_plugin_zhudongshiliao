@@ -28,7 +28,6 @@ DEFAULT_CONFIG = {
     "immersive_followup_enabled": False,
     "immersive_followup_timeout": 300,
     "immersive_followup_max_rounds": 3,
-    "llm_provider_id": "",
 }
 
 PROACTIVE_SYSTEM_PROMPT = """【系统提醒】对方已经很久没有理你了，你现在要主动找对方聊聊。
@@ -63,7 +62,7 @@ DIALOGUE_CONTINUATION_PREFIX = """【系统提醒】对方并没有接话哦，�
 5. 这是第 {current_round}/{max_rounds} 次追加，越往后应该越简短"""
 
 
-@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.4.5")
+@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.4.6")
 class MyPlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -126,8 +125,8 @@ class MyPlugin(Star):
     def _get_first_platform_id(self) -> str | None:
         """获取第一个可用的平台适配器ID"""
         try:
-            if self.platform_manager and self.platform_manager.platform_insts:
-                return self.platform_manager.platform_insts[0].meta().id
+            if self.context.platform_manager and self.context.platform_manager.platform_insts:
+                return self.context.platform_manager.platform_insts[0].meta().id
         except Exception as e:
             logger.error(f"获取平台ID失败: {e}")
         return None
@@ -773,15 +772,6 @@ class MyPlugin(Star):
             return []
 
     def _get_llm_provider_id(self) -> str | None:
-        config = self._get_config()
-        provider_id = config.get("llm_provider_id", "")
-        if provider_id:
-            prov = self.context.get_provider_by_id(provider_id)
-            if prov:
-                return provider_id
-            else:
-                logger.warning(f"配置的 LLM Provider ID '{provider_id}' 不存在，尝试自动检测")
-        
         providers = self.context.get_all_providers()
         if providers:
             chosen = providers[0]
