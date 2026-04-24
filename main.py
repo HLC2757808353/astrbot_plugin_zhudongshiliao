@@ -26,13 +26,14 @@ DEFAULT_CONFIG = {
     "proactive_reply_end_hour": 23,
     "proactive_reply_min_interval": 1800,
     "proactive_reply_max_interval": 7200,
+    "proactive_reply_timezone_offset": 8,
     "immersive_followup_enabled": False,
     "immersive_followup_timeout": 300,
     "immersive_followup_max_rounds": 3,
 }
 
 
-@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.6.7")
+@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.6.8")
 class MyPlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -966,10 +967,12 @@ class MyPlugin(Star):
             self._start_proactive_reply()
 
     def _is_in_active_time_window(self):
-        from datetime import datetime
-        now = datetime.now()
-        current_hour = now.hour
+        from datetime import datetime, timedelta
         config = self._get_config()
+        tz_offset = int(config.get("proactive_reply_timezone_offset", 8))
+        now_utc = datetime.now()
+        now_local = now_utc + timedelta(hours=tz_offset)
+        current_hour = now_local.hour
         start_hour = int(config.get("proactive_reply_start_hour", 9))
         end_hour = int(config.get("proactive_reply_end_hour", 23))
         
@@ -978,7 +981,7 @@ class MyPlugin(Star):
         else:
             result = current_hour >= start_hour or current_hour < end_hour
         
-        logger.info(f"时间窗口检查: 当前{current_hour}点, 窗口{start_hour}-{end_hour}, 结果={'活跃' if result else '不活跃'}")
+        logger.info(f"时间窗口检查: 本地{current_hour}点(UTC+{tz_offset}), 窗口{start_hour}-{end_hour}, 结果={'活跃' if result else '不活跃'}")
         return result
 
     def _get_next_proactive_interval(self):

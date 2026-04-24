@@ -55,6 +55,14 @@
     "editable": true,
     "display_name": "主动回复结束时间"
   },
+  "proactive_reply_timezone_offset": {
+    "description": "时区偏移（小时）",
+    "type": "int",
+    "default": 8,
+    "hint": "服务器时间与本地时间的时差。中国为8，日本为9，如服务器已配置时区则填0",
+    "editable": true,
+    "display_name": "时区偏移"
+  },
   "proactive_reply_min_interval": {
     "description": "主动回复最小间隔（秒）",
     "type": "int",
