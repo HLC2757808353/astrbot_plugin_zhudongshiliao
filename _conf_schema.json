@@ -102,5 +102,13 @@
     "hint": "单次对话中最多连续延续几次。达到上限后停止，防止无限延续造成骚扰和API浪费。每轮都会消耗一次LLM调用且AI可选择保持沉默。默认3轮",
     "editable": true,
     "display_name": "对话延续最大轮次"
+  },
+  "max_history_length": {
+    "description": "对话历史最大长度限制",
+    "type": "int",
+    "default": 50,
+    "hint": "限制每个会话保存的最大消息数量，防止内存和存储无限增长。默认50条。设置过小会影响AI上下文理解，过大可能导致内存问题",
+    "editable": true,
+    "display_name": "历史消息最大数量"
   }
 }
