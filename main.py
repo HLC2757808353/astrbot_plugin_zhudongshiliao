@@ -34,7 +34,7 @@ DEFAULT_CONFIG = {
 }
 
 
-@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.9.0")
+@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.9.1")
 class MyPlugin(Star):
     STRICT_ERROR_PATTERNS = [
         r'Error code:\s*\d+',
@@ -775,8 +775,8 @@ class MyPlugin(Star):
             contexts = []
             for msg in recent_history:
                 role = msg.get("role", "user")
-                content = msg.get("content", "")
-                if role in ("user", "assistant", "system") and content:
+                content = str(msg.get("content", "") or "").strip()
+                if role in ("user", "assistant") and content:
                     contexts.append(Message(role=role, content=content))
             
             logger.debug(f"获取到管理员会话上下文: {len(contexts)} 条消息")
@@ -857,21 +857,27 @@ class MyPlugin(Star):
                 if last_msg.get("role") == "assistant":
                     already_reached_out = True
             
+            system_prompt = persona_prompt
+            
             if already_reached_out:
-                system_prompt = persona_prompt + "\n\n你现在想主动找对方说话。你之前已经发过消息但对方没有回复。你可以选择再说点什么，也可以选择不打扰。如果你想说话，就像平时主动找朋友聊天那样自然地说。如果不想说，只回复[SILENCE]。"
+                prompt_text = "[SILENCE]表示不说。对方还没回你，还想说吗？"
             else:
-                system_prompt = persona_prompt + "\n\n你现在想主动找对方说话。就像你突然想起一个人，想跟他聊聊天那样自然。不要说'我来找你'之类的话，直接像平时聊天一样开头就好。如果不想说，只回复[SILENCE]。"
+                prompt_text = "[SILENCE]表示不说。"
             
             contexts = []
             for msg in history[-20:]:
                 role = msg.get("role", "")
-                content = msg.get("content", "")
+                content = str(msg.get("content", "") or "").strip()
                 if role in ("user", "assistant") and content:
                     contexts.append(Message(role=role, content=content))
             
+            if not contexts:
+                logger.info("无有效上下文，跳过主动回复")
+                return None
+            
             response = await self.context.llm_generate(
                 chat_provider_id=provider_id,
-                prompt="",
+                prompt=prompt_text,
                 contexts=contexts,
                 system_prompt=system_prompt,
             )
@@ -933,18 +939,22 @@ class MyPlugin(Star):
             
             persona_prompt = await self._get_persona_prompt(umo, conv)
             
-            system_prompt = persona_prompt + f"\n\n你刚才说的话对方没有回复。你现在还想再说点什么吗？就像平时聊天时对方没回你，你会怎么自然地接话。不想说就只回复[SILENCE]。"
+            system_prompt = persona_prompt
             
             contexts = []
             for msg in history[-20:]:
                 role = msg.get("role", "")
-                content = msg.get("content", "")
+                content = str(msg.get("content", "") or "").strip()
                 if role in ("user", "assistant") and content:
                     contexts.append(Message(role=role, content=content))
             
+            if not contexts:
+                logger.info("无有效上下文，跳过对话延续")
+                return None
+            
             response = await self.context.llm_generate(
                 chat_provider_id=provider_id,
-                prompt="",
+                prompt="[SILENCE]表示不说。对方没回你，还想说吗？",
                 contexts=contexts,
                 system_prompt=system_prompt,
             )
