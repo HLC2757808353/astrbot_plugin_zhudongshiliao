@@ -34,7 +34,7 @@ DEFAULT_CONFIG = {
 }
 
 
-@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.9.1")
+@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.9.2")
 class MyPlugin(Star):
     STRICT_ERROR_PATTERNS = [
         r'Error code:\s*\d+',
@@ -248,8 +248,8 @@ class MyPlugin(Star):
             if recent_messages:
                 for msg in recent_messages[-6:]:
                     role = "用户" if msg.get("role") == "user" else "AI"
-                    content = msg.get("content", "")[:300]
-                    if content:
+                    content = str(msg.get("content", "") or "")[:300]
+                    if content.strip():
                         context_parts.append(f"{role}: {content}")
             
             recent_summary = "\n".join(context_parts) if context_parts else "（无最近对话）"
@@ -379,7 +379,10 @@ class MyPlugin(Star):
                             conv = await self.context.conversation_manager.get_conversation(umo, conv_id)
                             if conv and conv.history:
                                 history = json.loads(conv.history)
-                                source_context["recent_messages"] = history[-10:]
+                                source_context["recent_messages"] = [
+                                    msg for msg in history[-10:]
+                                    if msg.get("role") in ("user", "assistant") and str(msg.get("content", "") or "").strip()
+                                ]
                     except Exception as e:
                         logger.debug(f"获取来源会话上下文失败: {e}")
         
@@ -581,8 +584,8 @@ class MyPlugin(Star):
             if recent_messages:
                 for msg in recent_messages[-6:]:
                     role = "用户" if msg.get("role") == "user" else "AI"
-                    content = msg.get("content", "")[:300]
-                    if content:
+                    content = str(msg.get("content", "") or "")[:300]
+                    if content.strip():
                         context_parts.append(f"{role}: {content}")
             
             recent_summary = "\n".join(context_parts) if context_parts else "（无最近对话）"
@@ -738,53 +741,6 @@ class MyPlugin(Star):
 
     # ==================== LLM 调用层 ====================
 
-    def _get_admin_umo(self) -> str | None:
-        if self._admin_umo:
-            return self._admin_umo
-        
-        config = self._get_config()
-        admin_id = config.get("admin_id", "")
-        if not admin_id:
-            return None
-        
-        platform_id = self._get_first_platform_id()
-        if not platform_id:
-            return None
-        
-        return f"{platform_id}:FriendMessage:{admin_id}"
-
-    async def _get_admin_conversation_contexts(self, max_messages: int = 30) -> list[Message]:
-        umo = self._admin_umo
-        if not umo:
-            return []
-        
-        try:
-            conv_id = await self.context.conversation_manager.get_curr_conversation_id(umo)
-            if not conv_id:
-                logger.debug(f"管理员会话 {umo} 没有找到对话记录")
-                return []
-            
-            conv = await self.context.conversation_manager.get_conversation(umo, conv_id)
-            if not conv or not conv.history:
-                return []
-            
-            history = json.loads(conv.history)
-            
-            recent_history = history[-max_messages:] if len(history) > max_messages else history
-            
-            contexts = []
-            for msg in recent_history:
-                role = msg.get("role", "user")
-                content = str(msg.get("content", "") or "").strip()
-                if role in ("user", "assistant") and content:
-                    contexts.append(Message(role=role, content=content))
-            
-            logger.debug(f"获取到管理员会话上下文: {len(contexts)} 条消息")
-            return contexts
-        except Exception as e:
-            logger.error(f"获取管理员会话上下文失败: {e}")
-            return []
-
     def _get_llm_provider_id(self) -> str | None:
         providers = self.context.get_all_providers()
         if providers:
@@ -853,16 +809,19 @@ class MyPlugin(Star):
             
             already_reached_out = False
             if history:
-                last_msg = history[-1]
-                if last_msg.get("role") == "assistant":
-                    already_reached_out = True
+                for msg in reversed(history):
+                    if msg.get("role") == "assistant":
+                        already_reached_out = True
+                        break
+                    elif msg.get("role") == "user":
+                        break
             
             system_prompt = persona_prompt
             
             if already_reached_out:
                 prompt_text = "[SILENCE]表示不说。对方还没回你，还想说吗？"
             else:
-                prompt_text = "[SILENCE]表示不说。"
+                prompt_text = "[SILENCE]表示不说。你想跟对方说点什么吗？"
             
             contexts = []
             for msg in history[-20:]:
@@ -1063,7 +1022,8 @@ class MyPlugin(Star):
         ai_message = await self._call_llm_for_proactive(umo)
         
         if not ai_message:
-            logger.error("LLM 未能生成主动回复内容，跳过本次")
+            logger.info("LLM 未能生成主动回复内容或AI选择沉默，跳过本次")
+            self._schedule_next_proactive()
             return
         
         try:
@@ -1073,6 +1033,7 @@ class MyPlugin(Star):
             self._schedule_next_proactive()
         except Exception as e:
             logger.error(f"AI主动回复发送失败: {e}")
+            self._schedule_next_proactive()
 
     async def _proactive_reply_loop(self):
         while True:
@@ -1177,6 +1138,8 @@ class MyPlugin(Star):
             
             timeout = int(config.get("immersive_followup_timeout", 300))
             max_rounds = int(config.get("immersive_followup_max_rounds", 3))
+            captured_timeout = timeout
+            captured_max_rounds = max_rounds
             
             state_key = f"{admin_id}_followup"
             current_state = self._followup_state.get(state_key, {
@@ -1199,13 +1162,13 @@ class MyPlugin(Star):
             current_state["last_ai_text"] = text_content
             
             async def followup_callback():
-                await asyncio.sleep(timeout)
+                await asyncio.sleep(captured_timeout)
                 
                 state = self._followup_state.get(state_key)
                 if not state:
                     return
                 
-                if state["round"] >= max_rounds:
+                if state["round"] >= captured_max_rounds:
                     return
                 
                 state["round"] += 1
@@ -1213,12 +1176,12 @@ class MyPlugin(Star):
                 
                 umo = self._admin_umo
                 
-                logger.info(f"沉浸式对话延续 [{round_num}/{max_rounds}] 触发，正在调用 LLM 生成...")
+                logger.info(f"沉浸式对话延续 [{round_num}/{captured_max_rounds}] 触发，正在调用 LLM 生成...")
                 
                 continuation_text = await self._call_llm_for_dialogue_continuation(
                     umo=umo,
                     current_round=round_num,
-                    max_rounds=max_rounds,
+                    max_rounds=captured_max_rounds,
                 )
                 
                 if continuation_text:
@@ -1229,7 +1192,7 @@ class MyPlugin(Star):
                     except Exception as e:
                         logger.error(f"对话延续消息发送失败: {e}")
                 
-                if state["round"] < max_rounds:
+                if state["round"] < captured_max_rounds:
                     state["timer_task"] = asyncio.create_task(followup_callback())
             
             current_state["timer_task"] = asyncio.create_task(followup_callback())
