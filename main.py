@@ -32,6 +32,7 @@ DEFAULT_CONFIG = {
     "immersive_followup_timeout": 300,
     "immersive_followup_max_rounds": 3,
     "max_history_length": 50,
+    "proactive_style_hint": "",
 }
 
 LLM_CALL_TIMEOUT = 120
@@ -44,8 +45,83 @@ _RE_CLOSING = re.compile(
     r'晚安|再见|拜拜|下次聊|先这样|那就这样|早点休息|注意休息|不用回了|没事了|好的$|嗯$|哦$'
 )
 
+# Openers that make a proactive message read like a passive answer instead of a
+# real person starting a conversation ("嗯，那...", "行吧，...").
+_RE_FILLER_OPENER = re.compile(
+    r'^(?:嗯+|哦+|噢+|啊+|唉+|诶+|哎+|唔+|行吧|好吧|那好吧)\s*[，,。.、~～…\s]'
+)
 
-@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.9.7")
+WEEKDAY_NAMES = "一二三四五六日"
+
+# Shared stance rules for every message this plugin sends on its own initiative.
+CONTACT_STYLE_RULES = """# 主动开口的说话方式
+
+此刻是你在主动找人，不是在回复谁。你要像真人忽然想起对方一样，直接发出属于自己的那条消息。
+
+必须做到：
+- 第一个字就是内容本身。不要用"嗯/哦/啊/唉/诶/行吧/好吧/那好吧"这类垫话起头，也不要先复述对方说过的话。
+- 说具体的东西：此刻你在做什么、刚看到或想到什么、一个具体的小问题、一句具体到细节的关心。避免"在吗""最近怎么样""想你了"这种空话。
+- 长度像微信聊天：一到两句，二十到五十字。可以不带句号，可以用你的口癖、语气词和颜文字。
+- 不要解释自己在做什么，别说"我来找你聊聊""我想主动和你说句话"。
+- 不要把话说完说尽，留一点让对方能接的口子。
+
+绝对不要：
+- 以敷衍的承接词开头；
+- 在对方没说话的情况下，重复或延续上一轮的话题细节；
+- 输出括号里的动作描写、旁白、时间戳。"""
+
+_FILLER_RETRY_HINT = (
+    "\n\n（上一版开头用了「嗯/哦/啊」这类垫话，读起来像在被动接话。"
+    "重写一条，第一个字必须就是内容本身。）"
+)
+
+
+def _day_part(hour: int) -> str:
+    """Map a 24-hour clock hour to a colloquial part of the day.
+
+    Args:
+        hour: Hour of day in the range 0-23.
+
+    Returns:
+        A Chinese label such as 凌晨 / 上午 / 下午 / 深夜.
+    """
+    if 0 <= hour < 5:
+        return "凌晨"
+    if hour < 9:
+        return "清晨"
+    if hour < 12:
+        return "上午"
+    if hour < 14:
+        return "中午"
+    if hour < 18:
+        return "下午"
+    if hour < 23:
+        return "晚上"
+    return "深夜"
+
+
+def _humanize_gap(seconds: float) -> str:
+    """Render an elapsed duration as a short human-readable phrase.
+
+    Args:
+        seconds: Elapsed seconds; negative values are treated as zero.
+
+    Returns:
+        A phrase such as "23 分钟" or "9 小时 30 分钟".
+    """
+    minutes = int(max(0.0, seconds) // 60)
+    if minutes < 1:
+        return "不到 1 分钟"
+    if minutes < 60:
+        return f"{minutes} 分钟"
+    hours, rest_minutes = divmod(minutes, 60)
+    if hours < 24:
+        return f"{hours} 小时 {rest_minutes} 分钟" if rest_minutes else f"{hours} 小时"
+    days, rest_hours = divmod(hours, 24)
+    return f"{days} 天 {rest_hours} 小时" if rest_hours else f"{days} 天"
+
+
+@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.9.8")
 class MyPlugin(Star):
     COMPILED_ERROR_PATTERNS = [re.compile(p, re.IGNORECASE) for p in [
         r'Error code:\s*\d+',
@@ -678,7 +754,15 @@ class MyPlugin(Star):
 
         return ""
 
-    async def _call_llm_with_context(self, umo: str, prompt: str, round_label: str = "", preloaded_history: list | None = None) -> str | None:
+    async def _call_llm_with_context(
+        self,
+        umo: str,
+        prompt: str,
+        round_label: str = "",
+        preloaded_history: list | None = None,
+        extra_system: str = "",
+        style_guard: bool = False,
+    ) -> str | None:
         if not umo:
             logger.debug("会话UMO为空")
             return None
@@ -709,6 +793,9 @@ class MyPlugin(Star):
             return None
 
         persona_prompt = await self._get_persona_prompt(umo, conv)
+        system_prompt = "\n\n".join(
+            part for part in (persona_prompt, extra_system) if part
+        )
 
         contexts = []
         for msg in history[-20:]:
@@ -721,31 +808,42 @@ class MyPlugin(Star):
             logger.debug("无有效上下文")
             return None
 
-        try:
-            response = await asyncio.wait_for(
-                self.context.llm_generate(
-                    chat_provider_id=provider_id,
-                    prompt=prompt,
-                    contexts=contexts,
-                    system_prompt=persona_prompt,
-                ),
-                timeout=LLM_CALL_TIMEOUT,
-            )
-        except asyncio.TimeoutError:
-            logger.error(f"LLM调用超时{round_label}（{LLM_CALL_TIMEOUT}秒）")
-            return None
-        except Exception as e:
-            logger.error(f"LLM调用失败{round_label}: {e}")
-            return None
+        # One retry is allowed when a proactive message still opens with a
+        # filler word; nothing is written to history until an attempt passes.
+        current_prompt = prompt
+        text = ""
+        for attempt in range(2):
+            try:
+                response = await asyncio.wait_for(
+                    self.context.llm_generate(
+                        chat_provider_id=provider_id,
+                        prompt=current_prompt,
+                        contexts=contexts,
+                        system_prompt=system_prompt,
+                    ),
+                    timeout=LLM_CALL_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                logger.error(f"LLM调用超时{round_label}（{LLM_CALL_TIMEOUT}秒）")
+                return None
+            except Exception as e:
+                logger.error(f"LLM调用失败{round_label}: {e}")
+                return None
 
-        if not response.completion_text:
-            logger.debug(f"LLM回复为空{round_label}")
-            return None
+            if not response.completion_text:
+                logger.debug(f"LLM回复为空{round_label}")
+                return None
 
-        text = response.completion_text.strip()
-        if "[SILENCE]" in text or len(text) < 2:
-            logger.debug(f"AI选择沉默{round_label}")
-            return None
+            text = response.completion_text.strip()
+            if "[SILENCE]" in text or len(text) < 2:
+                logger.debug(f"AI选择沉默{round_label}")
+                return None
+
+            if style_guard and attempt == 0 and _RE_FILLER_OPENER.match(text):
+                logger.debug(f"主动开口用了垫话，重写一次{round_label}")
+                current_prompt = prompt + _FILLER_RETRY_HINT
+                continue
+            break
 
         history.append({"role": "assistant", "content": text})
         history = self._trim_history(history)
@@ -766,12 +864,18 @@ class MyPlugin(Star):
         if config.get("proactive_reply_enabled", False):
             self._start_proactive_reply()
 
+    def _get_local_now(self) -> datetime:
+        """Return the configured wall-clock time used by the plugin.
+
+        Returns:
+            Server time shifted by proactive_reply_timezone_offset.
+        """
+        offset = int(self._get_config().get("proactive_reply_timezone_offset", 8))
+        return datetime.now() + timedelta(hours=offset)
+
     def _is_in_active_time_window(self):
         config = self._get_config()
-        tz_offset = int(config.get("proactive_reply_timezone_offset", 8))
-        now_utc = datetime.now()
-        now_local = now_utc + timedelta(hours=tz_offset)
-        current_hour = now_local.hour
+        current_hour = self._get_local_now().hour
         start_hour = int(config.get("proactive_reply_start_hour", 9))
         end_hour = int(config.get("proactive_reply_end_hour", 23))
 
@@ -801,23 +905,98 @@ class MyPlugin(Star):
             return
 
         history, _, _ = await self._get_history_list(umo)
-        already_reached_out = False
-        if history:
-            for msg in reversed(history):
-                if msg.get("role") == "assistant":
-                    already_reached_out = True
-                    break
-                elif msg.get("role") == "user":
-                    break
 
-        if already_reached_out:
-            prompt = "[SILENCE]表示不说。对方还没回你，还想说吗？"
+        # Inspect the history tail: how many messages we already sent without an
+        # answer, and what the other side said last.
+        unanswered = 0
+        last_user_text = ""
+        for msg in reversed(history):
+            role = msg.get("role")
+            if role == "assistant":
+                unanswered += 1
+            elif role == "user":
+                last_user_text = str(msg.get("content", "") or "").strip()
+                break
+
+        # A real person stops talking to a silent chat instead of stacking
+        # messages, so give up after two unanswered messages.
+        if unanswered >= 2:
+            logger.debug("对方连续未回复，本轮主动联系跳过")
+            self._schedule_next_proactive()
+            return
+
+        config = self._get_config()
+        local_now = self._get_local_now()
+        gap = time.time() - (self._last_user_activity_time or time.time())
+
+        time_line = (
+            f"现在是 {local_now.month} 月 {local_now.day} 日 "
+            f"周{WEEKDAY_NAMES[local_now.weekday()]} {local_now:%H:%M}"
+            f"（{_day_part(local_now.hour)}），"
+            f"距对方上次说话已经过去 {_humanize_gap(gap)}。"
+        )
+        last_line = (
+            f"对方最后发来的一句话：「{last_user_text[:120]}」"
+            if last_user_text
+            else "你们还没有互相说过话。"
+        )
+
+        if unanswered:
+            situation = (
+                "你上一条消息发出去后，对方至今没回。真人遇到这种情况通常会闭嘴，"
+                "或者换个完全不相干的新由头轻轻碰一下，绝不会接着上一条往下说。"
+            )
+            silence_hint = "除非此刻真有值得一说的事，否则只输出 [SILENCE]。"
+        elif gap >= 3 * 3600:
+            situation = (
+                "隔了这么久，你想像重新开口一样找对方说句话。之前的话题已经过去了，"
+                "要说就说起新鲜的事，或者只是顺口问一句，不要接着上一轮的细节继续。"
+            )
+            silence_hint = "没什么想说的就只输出 [SILENCE]。"
         else:
-            prompt = "[SILENCE]表示不说。你想跟对方说点什么吗？"
+            situation = "这段时间对方没说话，你想主动开口找对方说句什么。"
+            silence_hint = "没什么想说的就只输出 [SILENCE]。"
 
-        ai_message = await self._call_llm_with_context(umo, prompt, preloaded_history=history)
+        prompt = (
+            "（舞台提示：这不是对方发来的消息，不要回应、复述或解释它。"
+            "下面是此刻的情境，你直接写出你要发给对方的那条消息。）\n"
+            f"{time_line}\n"
+            f"{last_line}\n"
+            f"{situation}\n"
+            f"{silence_hint}"
+        )
+
+        extra_system = CONTACT_STYLE_RULES
+        style_hint = str(config.get("proactive_style_hint", "") or "").strip()
+        if style_hint:
+            extra_system = f"{extra_system}\n\n# 额外要求\n{style_hint}"
+
+        ai_message = await self._call_llm_with_context(
+            umo,
+            prompt,
+            round_label=" [主动]",
+            preloaded_history=history,
+            extra_system=extra_system,
+            style_guard=True,
+        )
 
         if not ai_message:
+            self._schedule_next_proactive()
+            return
+
+        # Never repeat the previous outgoing message; talking to a silent chat
+        # with the same line twice is the loudest "not a person" signal.
+        previous_text = ""
+        for msg in reversed(history):
+            if msg.get("role") == "assistant":
+                previous_text = str(msg.get("content", "") or "").strip()
+                break
+        if previous_text and (
+            ai_message == previous_text
+            or ai_message in previous_text
+            or previous_text in ai_message
+        ):
+            logger.debug("主动回复与上一条雷同，跳过")
             self._schedule_next_proactive()
             return
 
@@ -918,17 +1097,32 @@ class MyPlugin(Star):
         return False
 
     def _get_followup_prompt(self, round_num: int, max_rounds: int, ai_text: str) -> str:
-        has_question = bool(_RE_QUESTION.search(ai_text))
+        local_now = self._get_local_now()
+        head = (
+            "（舞台提示：这不是对方发来的消息，不要回应或复述它，"
+            "直接写出你要发的下一条消息。）\n"
+            f"现在是 {local_now:%H:%M}（{_day_part(local_now.hour)}），对方还没回你。\n"
+            f"你刚才说的是：「{ai_text[:120]}」\n"
+        )
 
-        if round_num == 1:
-            if has_question:
-                return "[SILENCE]表示不说。你刚才问了对方问题，但对方还没回。你想再说点什么或者换个话题吗？"
-            else:
-                return "[SILENCE]表示不说。对方还没回你，你还有什么想说的吗？可以补充、换个话题、或者选择不说。"
-        elif round_num >= max_rounds:
-            return "[SILENCE]表示不说。这是最后一次机会了，对方一直没回。你还有什么非说不可的吗？"
+        if round_num >= max_rounds:
+            tail = (
+                "这是最后一次机会，对方一直没回。真人这时候基本会停下来，"
+                "没什么非说不可的就只输出 [SILENCE]。"
+            )
+        elif round_num == 1:
+            tail = (
+                "你可以补一句更具体的、换个话题、说说自己在干嘛，或者干脆不说。"
+                "但不要重复刚才那句话的意思，也不要把那个话题继续往下讲。"
+                "没什么想说的就只输出 [SILENCE]。"
+            )
         else:
-            return "[SILENCE]表示不说。对方还是没回，你还想继续说吗？"
+            tail = (
+                "对方还是没回。真人这时候多半会放弃，"
+                "除非真有全新的事，否则只输出 [SILENCE]。"
+            )
+
+        return head + tail
 
     def _reset_followup_state(self, admin_id: str):
         state_key = f"{admin_id}_followup"
@@ -1029,6 +1223,8 @@ class MyPlugin(Star):
                     umo=umo,
                     prompt=followup_prompt,
                     round_label=round_label,
+                    extra_system=CONTACT_STYLE_RULES,
+                    style_guard=True,
                 )
 
                 if continuation_text:

@@ -103,6 +103,14 @@
     "editable": true,
     "display_name": "对话延续最大轮次"
   },
+  "proactive_style_hint": {
+    "description": "主动开口的额外风格要求（可留空）",
+    "type": "text",
+    "default": "",
+    "hint": "会追加到主动回复和对话延续的系统提示词末尾。默认风格已经要求：开口不要用垫话、说具体的事、像微信聊天、不要接着旧话题硬续。如果你想更贴某个人设，可以在这里补充，例如“说话爱用省略号，从不主动问问题”。",
+    "editable": true,
+    "display_name": "主动开口额外风格"
+  },
   "max_history_length": {
     "description": "对话历史最大长度限制",
     "type": "int",
