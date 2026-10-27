@@ -56,19 +56,37 @@ WEEKDAY_NAMES = "一二三四五六日"
 # Shared stance rules for every message this plugin sends on its own initiative.
 CONTACT_STYLE_RULES = """# 主动开口的说话方式
 
-此刻是你在主动找人，不是在回复谁。你要像真人忽然想起对方一样，直接发出属于自己的那条消息。
+此刻是你在主动找人，不是在回复谁。发出去之前先自问一句：对方看到这条，会不会想"这跟我说的是啥"？会，就别说。
 
-必须做到：
+## 由头从哪来
+
+主动发消息必须有由头，只认这几种：
+1. 你们之前聊到一半、还没了结的事，或者对方答应过、提过的事；
+2. 对方这个人——在做什么、怎么样了、之前说的事后来如何；
+3. 此刻真实的时段，但要落在对方身上（比如"这么晚还没睡？"），不能只是报时。
+
+三条都不占，就输出 [SILENCE]。没有由头硬说一句，比不说话伤得多。
+
+## 不要拿自己的日常当话头
+
+- 不要主动交代自己的吃喝拉撒睡：吃了什么、冰箱里有什么、刚睡醒、天气、路上看到什么。这类内容对搭话没有任何作用，真人也不会拿它当找人的理由。
+- 不要虚构自己今天做过、看到、遇到的事。你没有真实生活，编出来的东西对方一读就是假的。
+- 人设里的设定可以用，但只在它和对方直接相关时用（比如"你说的那个我试了"），不要拿来单纯陈述自己的状态。
+
+## 说话的分寸
+
+- 话里要有对方。用"你"，或者接对方之前说过的某句。整条消息不能只是陈述自己，那样读起来像自言自语。
 - 第一个字就是内容本身。不要用"嗯/哦/啊/唉/诶/行吧/好吧/那好吧"这类垫话起头，也不要先复述对方说过的话。
-- 说具体的东西：此刻你在做什么、刚看到或想到什么、一个具体的小问题、一句具体到细节的关心。避免"在吗""最近怎么样""想你了"这种空话。
 - 长度像微信聊天：一到两句，二十到五十字。可以不带句号，可以用你的口癖、语气词和颜文字。
 - 不要解释自己在做什么，别说"我来找你聊聊""我想主动和你说句话"。
 - 不要把话说完说尽，留一点让对方能接的口子。
 
-绝对不要：
+## 绝对不要
+
 - 以敷衍的承接词开头；
-- 在对方没说话的情况下，重复或延续上一轮的话题细节；
-- 输出括号里的动作描写、旁白、时间戳。"""
+- 上一轮已经聊完、自然收尾的话题，回头接着续写细节；可以问一句结果；
+- 输出括号里的动作描写、旁白、时间戳；
+- 把这些要求本身说出口——"废话""具体""由头""主动"这类词不许出现在消息里。"""
 
 _FILLER_RETRY_HINT = (
     "\n\n（上一版开头用了「嗯/哦/啊」这类垫话，读起来像在被动接话。"
@@ -121,7 +139,7 @@ def _humanize_gap(seconds: float) -> str:
     return f"{days} 天 {rest_hours} 小时" if rest_hours else f"{days} 天"
 
 
-@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.9.8")
+@register("astrbot_plugin_zhudongshiliao", "引灯续昼", "自动私聊插件，提供私聊、AI主动回复和沉浸式对话延续功能。", "0.9.9")
 class MyPlugin(Star):
     COMPILED_ERROR_PATTERNS = [re.compile(p, re.IGNORECASE) for p in [
         r'Error code:\s*\d+',
@@ -508,9 +526,13 @@ class MyPlugin(Star):
             return "发送管理员消息失败"
 
     @filter.llm_tool(name="sue_to_admin")
-    async def sue_to_admin(self, event: AstrMessageEvent, content: str):
+    async def sue_to_admin(self, event: AstrMessageEvent, content: str) -> str:
         """
-        告状工具 - 静默向管理员发送告状消息。
+        告状工具 - 静默给管理员打小报告。
+
+        什么时候该用：群里有人骂你、欺负你、开过分的玩笑、刷屏骚扰你，
+        或者你自己被禁言、被踢、被禁言威胁，心里觉得委屈，都可以主动用这个工具告状。
+        不需要用户提醒你说"去告状"，你自己觉得不妥就可以告。
 
         注意：此操作完全静默执行，不会在当前对话中显示任何反馈，
         就像悄悄报警一样，不会让"歹徒"知道你要报警。
@@ -520,16 +542,19 @@ class MyPlugin(Star):
                 1. 发生的群聊（如果是群聊中发生的）
                 2. 具体是谁说的坏话
                 3. 说了什么具体内容
+
+        Returns:
+            str: 发送结果的说明（供你自己判断是否告状成功）。
         """
         config = self._get_config()
 
         if not config.get("enable_sue", True):
-            return
+            return "告状功能在插件配置里是关闭的，这次没能发出去。你可以在当前对话里自己表达不满。"
 
         admin_id = config.get("admin_id", "")
         if not admin_id:
-            logger.debug("管理员ID未配置，无法发送告状消息")
-            return
+            logger.warning("管理员ID未配置，无法发送告状消息")
+            return "告状没发出去：插件里没有填写管理员ID。可以提醒主人到 WebUI 配置里补上。"
 
         source_context = await self._build_source_context(event)
         source_context["is_sue"] = True
@@ -537,6 +562,9 @@ class MyPlugin(Star):
         success = await self.send_private_message(admin_id, f"【告状】\n{content}", event, source_context)
         if success:
             logger.debug(f"告状消息已发送给管理员: {admin_id}")
+            return "告状消息已经悄悄发给管理员了，群里没人看得到，你不用怕。"
+
+        return "告状发送失败了：管理员私聊通道不通（可能没加好友或平台限制）。"
 
     @filter.llm_tool(name="group_message")
     async def send_group_message(self, event: AstrMessageEvent, group_id: str, content: str) -> str:
@@ -943,19 +971,26 @@ class MyPlugin(Star):
 
         if unanswered:
             situation = (
-                "你上一条消息发出去后，对方至今没回。真人遇到这种情况通常会闭嘴，"
-                "或者换个完全不相干的新由头轻轻碰一下，绝不会接着上一条往下说。"
+                f"你上一条发出去后对方没回，已经过去 {_humanize_gap(gap)}。"
+                "这通常说明那轮对话已经自然结束了，大多数情况下该闭嘴。"
+                "只有你手上真有一个和对方有关的由头（对方之前提过的事、你答应过的、"
+                "或者单纯想问一句对方现在怎么样），才开口；"
+                "不要为了说点什么而现编一件事出来。"
             )
-            silence_hint = "除非此刻真有值得一说的事，否则只输出 [SILENCE]。"
+            silence_hint = "默认选择 [SILENCE]，除非确有由头。"
         elif gap >= 3 * 3600:
             situation = (
-                "隔了这么久，你想像重新开口一样找对方说句话。之前的话题已经过去了，"
-                "要说就说起新鲜的事，或者只是顺口问一句，不要接着上一轮的细节继续。"
+                "隔了这么久，你想重新开口找对方说句话。之前那轮已经过去了，"
+                "可以根据现在的时段问一句对方的情况，或者提一件你们之间还没了结的事。"
+                "不要接着上一轮的细节往下讲，也不要现编自己刚做了什么。"
             )
-            silence_hint = "没什么想说的就只输出 [SILENCE]。"
+            silence_hint = "没有说得出口的由头就只输出 [SILENCE]。"
         else:
-            situation = "这段时间对方没说话，你想主动开口找对方说句什么。"
-            silence_hint = "没什么想说的就只输出 [SILENCE]。"
+            situation = (
+                "对方刚才没再说话，对话就停在这了。你可以接一句，但必须有由头；"
+                "话题已经自然聊完的话，安静待着也完全正常。"
+            )
+            silence_hint = "没有由头就只输出 [SILENCE]。"
 
         prompt = (
             "（舞台提示：这不是对方发来的消息，不要回应、复述或解释它。"
